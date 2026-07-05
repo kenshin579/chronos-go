@@ -42,3 +42,15 @@ func (r *RDB) ForwardRetry(ctx context.Context, qname string, now time.Time, max
 	}
 	return n, nil
 }
+
+// ForwardScheduled promotes due delayed tasks (score <= now) from the scheduled
+// ZSET into the stream. It shares forwardCmd with ForwardRetry.
+func (r *RDB) ForwardScheduled(ctx context.Context, qname string, now time.Time, max int) (int, error) {
+	keys := []string{base.ScheduledKey(qname), base.StreamKey(qname)}
+	argv := []interface{}{now.Unix(), max, base.TaskKeyPrefix(qname), int(base.StatePending)}
+	n, err := forwardCmd.Run(ctx, r.client, keys, argv...).Int()
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
