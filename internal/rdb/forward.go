@@ -12,6 +12,10 @@ import (
 // forwardCmd moves due tasks from a source ZSET back into the stream. It reads
 // task IDs with score <= now, and for each: appends the ID to the stream, sets
 // the task hash state to pending, and removes it from the ZSET.
+//
+// Only the top-level "state" hash field is updated (not the State inside the
+// serialized "msg"); the top-level field is the authoritative state. Readers
+// (e.g. a future Inspector) must read "state", not msg.State.
 // KEYS[1] source zset, KEYS[2] stream.
 // ARGV[1] now (score cutoff), ARGV[2] max count, ARGV[3] task-key prefix,
 // ARGV[4] pending state.

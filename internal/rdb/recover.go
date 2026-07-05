@@ -37,6 +37,11 @@ func (r *RDB) Recover(ctx context.Context, qname, consumer string, minIdle time.
 		return 0, nil, err
 	}
 
+	// A per-entry failure skips that entry and continues the batch, so one bad
+	// task cannot stall recovery of the rest. The last such error is returned so
+	// the caller can log it; the skipped entry stays in the PEL and is retried on
+	// the next tick.
+	var lastErr error
 	now := time.Now()
 	for _, m := range msgs {
 		taskID, _ := m.Values["task_id"].(string)
@@ -48,17 +53,20 @@ func (r *RDB) Recover(ctx context.Context, qname, consumer string, minIdle time.
 			continue
 		}
 		if err != nil {
-			return recovered, archived, err
+			lastErr = err
+			continue
 		}
 		msg, err := base.DecodeMessage([]byte(raw))
 		if err != nil {
-			return recovered, archived, err
+			lastErr = err
+			continue
 		}
 
 		// This reclaim counts as one failed attempt.
 		if msg.Retried >= msg.MaxRetry {
 			if aerr := r.Archive(ctx, qname, m.ID, msg, now); aerr != nil {
-				return recovered, archived, aerr
+				lastErr = aerr
+				continue
 			}
 			archived = append(archived, msg)
 			continue
@@ -67,9 +75,10 @@ func (r *RDB) Recover(ctx context.Context, qname, consumer string, minIdle time.
 		// Re-run promptly: schedule the retry for "now" so the forwarder
 		// picks it up on its next tick.
 		if rerr := r.Retry(ctx, qname, m.ID, msg, now); rerr != nil {
-			return recovered, archived, rerr
+			lastErr = rerr
+			continue
 		}
 		recovered++
 	}
-	return recovered, archived, nil
+	return recovered, archived, lastErr
 }

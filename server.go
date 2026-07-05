@@ -26,6 +26,11 @@ const (
 	recoverBatchSize = 100
 )
 
+// ackTimeout bounds the post-handler ack/retry/archive operations. These run on
+// a cancel-immune context (so they survive Shutdown), so a deadline is required
+// to keep a stalled Redis from blocking the worker — and thus Shutdown — forever.
+const ackTimeout = 30 * time.Second
+
 // errRecoveredExhausted is the cause passed to OnDeadLetter when a task is
 // dead-lettered by the recoverer (its retry budget ran out across crashes).
 var errRecoveredExhausted = errors.New("chronos: retries exhausted after recovery")
@@ -45,6 +50,11 @@ type ServerConfig struct {
 	RetryDelayFunc RetryDelayFunc
 	// OnDeadLetter is invoked when a task exhausts its retries (or returns a
 	// SkipRetry error). It fires whether the task is archived or discarded.
+	//
+	// It may fire more than once for the same task: if a handler runs longer than
+	// RecoverMinIdle, the recoverer can reclaim and dead-letter the task while the
+	// original worker is still running, then dead-letter it again. Make the hook
+	// idempotent (the archived ZSET entry itself is deduplicated by task ID).
 	OnDeadLetter func(ctx context.Context, info *TaskInfo, err error)
 
 	// ForwardInterval is how often the retry ZSET is scanned for due tasks.
@@ -230,8 +240,10 @@ func (s *Server) process(ctx context.Context, qname, streamID string, msg *base.
 	err := s.dispatchSafely(ctx, msg)
 
 	// Ack/move operations must outlive shutdown cancellation so a finished task
-	// is never left dangling in the PEL.
-	opCtx := context.WithoutCancel(ctx)
+	// is never left dangling in the PEL — but they still need a deadline, or a
+	// stalled Redis would block this worker forever and hang Shutdown's wg.Wait.
+	opCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ackTimeout)
+	defer cancel()
 
 	if err == nil {
 		if derr := s.rdb.Done(opCtx, qname, streamID, msg.ID); derr != nil {
