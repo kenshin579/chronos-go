@@ -1,0 +1,60 @@
+package base
+
+import "encoding/json"
+
+// TaskState is the lifecycle stage of a task.
+type TaskState int
+
+const (
+	StatePending   TaskState = iota + 1 // in the stream, awaiting a worker
+	StateActive                         // read by a worker (in the consumer group PEL)
+	StateCompleted                      // finished successfully
+	StateRetry                          // failed, awaiting retry (M2)
+	StateArchived                       // dead-letter (M2)
+	StateScheduled                      // delayed, awaiting its time (M3)
+)
+
+// String returns the lowercase name of the state.
+func (s TaskState) String() string {
+	switch s {
+	case StatePending:
+		return "pending"
+	case StateActive:
+		return "active"
+	case StateCompleted:
+		return "completed"
+	case StateRetry:
+		return "retry"
+	case StateArchived:
+		return "archived"
+	case StateScheduled:
+		return "scheduled"
+	default:
+		return "unknown"
+	}
+}
+
+// TaskMessage is the canonical, serialized representation of a task stored in
+// the task HASH. Later milestones extend this struct (Retried, MaxRetry, etc.)
+// — only fields needed for immediate execution are present in M1.
+type TaskMessage struct {
+	ID      string    `json:"id"`
+	Kind    string    `json:"kind"`
+	Payload []byte    `json:"payload"`
+	Queue   string    `json:"queue"`
+	State   TaskState `json:"state"`
+}
+
+// EncodeMessage serializes a TaskMessage for storage in Redis.
+func EncodeMessage(m *TaskMessage) ([]byte, error) {
+	return json.Marshal(m)
+}
+
+// DecodeMessage deserializes a TaskMessage read from Redis.
+func DecodeMessage(b []byte) (*TaskMessage, error) {
+	var m TaskMessage
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
