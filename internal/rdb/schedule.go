@@ -19,6 +19,14 @@ redis.call("ZADD", KEYS[2], ARGV[3], ARGV[4])
 return 1
 `)
 
+// scheduleScore renders a time as fractional Unix seconds for a ZSET score. Its
+// int64 truncation equals t.Unix(), but the fractional part preserves
+// sub-second precision so a delay shorter than a second is not rounded down to a
+// second boundary (which would let the forwarder promote it early).
+func scheduleScore(t time.Time) float64 {
+	return float64(t.Unix()) + float64(t.Nanosecond())/1e9
+}
+
 // Schedule stores a task for delayed execution at processAt.
 func (r *RDB) Schedule(ctx context.Context, msg *base.TaskMessage, processAt time.Time) error {
 	msg.State = base.StateScheduled
@@ -30,6 +38,6 @@ func (r *RDB) Schedule(ctx context.Context, msg *base.TaskMessage, processAt tim
 		return err
 	}
 	keys := []string{base.TaskKey(msg.Queue, msg.ID), base.ScheduledKey(msg.Queue)}
-	argv := []interface{}{encoded, int(base.StateScheduled), processAt.Unix(), msg.ID}
+	argv := []interface{}{encoded, int(base.StateScheduled), scheduleScore(processAt), msg.ID}
 	return scheduleCmd.Run(ctx, r.client, keys, argv...).Err()
 }

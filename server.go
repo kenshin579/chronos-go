@@ -313,7 +313,13 @@ func (s *Server) forwarderLoop(ctx context.Context) {
 					if ctx.Err() != nil {
 						return
 					}
-					s.logger.Error("chronos: forward failed", "queue", q, "error", err)
+					s.logger.Error("chronos: forward retry failed", "queue", q, "error", err)
+				}
+				if _, err := s.rdb.ForwardScheduled(ctx, q, time.Now(), forwardBatchSize); err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					s.logger.Error("chronos: forward scheduled failed", "queue", q, "error", err)
 				}
 			}
 		}
