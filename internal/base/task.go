@@ -35,14 +35,21 @@ func (s TaskState) String() string {
 }
 
 // TaskMessage is the canonical, serialized representation of a task stored in
-// the task HASH. Later milestones extend this struct (Retried, MaxRetry, etc.)
-// — only fields needed for immediate execution are present in M1.
+// the task HASH.
 type TaskMessage struct {
 	ID      string    `json:"id"`
 	Kind    string    `json:"kind"`
 	Payload []byte    `json:"payload"`
 	Queue   string    `json:"queue"`
 	State   TaskState `json:"state"`
+
+	// Retried is the number of retries already scheduled for this task.
+	Retried int `json:"retried"`
+	// MaxRetry is the maximum number of retries before the task is dead-lettered.
+	MaxRetry int `json:"max_retry"`
+	// NoArchive, when true, discards the task on retry exhaustion instead of
+	// storing it in the archived ZSET (the OnDeadLetter hook still fires).
+	NoArchive bool `json:"no_archive"`
 }
 
 // EncodeMessage serializes a TaskMessage for storage in Redis.

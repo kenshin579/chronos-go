@@ -19,3 +19,19 @@ func TestKeyBuilders(t *testing.T) {
 		}
 	}
 }
+
+func TestRetryAndArchivedAndTaskPrefixKeys(t *testing.T) {
+	if got := RetryKey("default"); got != "chronos:{default}:retry" {
+		t.Errorf("RetryKey = %q", got)
+	}
+	if got := ArchivedKey("default"); got != "chronos:{default}:archived" {
+		t.Errorf("ArchivedKey = %q", got)
+	}
+	if got := TaskKeyPrefix("default"); got != "chronos:{default}:t:" {
+		t.Errorf("TaskKeyPrefix = %q", got)
+	}
+	// TaskKey는 prefix + id와 일치해야 한다(forward Lua가 prefix로 키를 조립하므로).
+	if TaskKeyPrefix("default")+"abc" != TaskKey("default", "abc") {
+		t.Error("TaskKeyPrefix + id must equal TaskKey")
+	}
+}
