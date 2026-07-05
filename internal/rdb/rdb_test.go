@@ -55,3 +55,46 @@ func TestEnqueue_StoresBodyAndPushesToStream(t *testing.T) {
 		t.Error("queue 'default' not registered in queues set")
 	}
 }
+
+func TestDequeue_ReturnsEnqueuedTask(t *testing.T) {
+	client := testutil.NewRedis(t)
+	r := NewRDB(client)
+	ctx := context.Background()
+
+	if err := r.EnsureGroup(ctx, "default"); err != nil {
+		t.Fatalf("ensure group: %v", err)
+	}
+	msg := &base.TaskMessage{ID: "task-1", Kind: "k", Payload: []byte("{}"), Queue: "default"}
+	if err := r.Enqueue(ctx, msg); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	got, streamID, err := r.Dequeue(ctx, "consumer-1", 0, "default")
+	if err != nil {
+		t.Fatalf("dequeue: %v", err)
+	}
+	if got.ID != "task-1" {
+		t.Errorf("dequeued id = %q, want task-1", got.ID)
+	}
+	if streamID == "" {
+		t.Error("expected non-empty stream id")
+	}
+	if got.State != base.StateActive {
+		t.Errorf("state = %v, want active", got.State)
+	}
+}
+
+func TestDequeue_EmptyReturnsErrNoTask(t *testing.T) {
+	client := testutil.NewRedis(t)
+	r := NewRDB(client)
+	ctx := context.Background()
+
+	if err := r.EnsureGroup(ctx, "default"); err != nil {
+		t.Fatalf("ensure group: %v", err)
+	}
+
+	_, _, err := r.Dequeue(ctx, "consumer-1", 0, "default")
+	if err != ErrNoTask {
+		t.Errorf("err = %v, want ErrNoTask", err)
+	}
+}
