@@ -27,3 +27,20 @@ func TaskKey(qname, id string) string {
 func QueuesKey() string {
 	return "chronos:queues"
 }
+
+// TaskKeyPrefix returns the prefix shared by every task HASH key of a queue.
+// Lua scripts build a task key by concatenating this prefix with a task ID read
+// from a ZSET; the prefix keeps those keys in the same cluster slot.
+func TaskKeyPrefix(qname string) string {
+	return QueueKeyPrefix(qname) + "t:"
+}
+
+// RetryKey returns the ZSET key holding tasks awaiting retry (score = retry_at).
+func RetryKey(qname string) string {
+	return QueueKeyPrefix(qname) + "retry"
+}
+
+// ArchivedKey returns the ZSET key holding dead-lettered tasks (score = died_at).
+func ArchivedKey(qname string) string {
+	return QueueKeyPrefix(qname) + "archived"
+}

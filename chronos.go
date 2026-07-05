@@ -14,6 +14,9 @@ import (
 // DefaultQueue is the queue used when none is specified.
 const DefaultQueue = "default"
 
+// DefaultMaxRetry is the retry budget used when WithMaxRetry is not given.
+const DefaultMaxRetry = 25
+
 // TaskArgs is implemented by every task payload type. Kind returns a stable
 // identifier used to route the task to its handler; it MUST be defined on a
 // value receiver so it can be called on the zero value during registration.
@@ -58,8 +61,10 @@ func (c *Client) Close() error { return nil }
 
 // enqueueOptions holds resolved enqueue-time settings.
 type enqueueOptions struct {
-	queue  string
-	taskID string
+	queue     string
+	taskID    string
+	maxRetry  int
+	noArchive bool
 }
 
 // Option customizes a single Enqueue call.
@@ -84,11 +89,28 @@ func WithTaskID(id string) Option {
 	return optionFunc(func(o *enqueueOptions) { o.taskID = id })
 }
 
+// WithMaxRetry sets the maximum number of retries before the task is
+// dead-lettered. Defaults to DefaultMaxRetry.
+func WithMaxRetry(n int) Option {
+	return optionFunc(func(o *enqueueOptions) {
+		if n < 0 {
+			n = 0
+		}
+		o.maxRetry = n
+	})
+}
+
+// WithDeadLetterDiscard discards the task on retry exhaustion instead of storing
+// it in the archived ZSET. The OnDeadLetter hook still fires.
+func WithDeadLetterDiscard() Option {
+	return optionFunc(func(o *enqueueOptions) { o.noArchive = true })
+}
+
 // Enqueue serializes args and makes the task available for immediate
 // processing. It is a package-level function rather than a method because Go
 // methods cannot have type parameters.
 func Enqueue[T TaskArgs](ctx context.Context, c *Client, args T, opts ...Option) (*TaskInfo, error) {
-	options := enqueueOptions{queue: DefaultQueue}
+	options := enqueueOptions{queue: DefaultQueue, maxRetry: DefaultMaxRetry}
 	for _, opt := range opts {
 		opt.apply(&options)
 	}
@@ -104,10 +126,12 @@ func Enqueue[T TaskArgs](ctx context.Context, c *Client, args T, opts ...Option)
 	}
 
 	msg := &base.TaskMessage{
-		ID:      id,
-		Kind:    args.Kind(),
-		Payload: payload,
-		Queue:   options.queue,
+		ID:        id,
+		Kind:      args.Kind(),
+		Payload:   payload,
+		Queue:     options.queue,
+		MaxRetry:  options.maxRetry,
+		NoArchive: options.noArchive,
 	}
 	if err := c.rdb.Enqueue(ctx, msg); err != nil {
 		return nil, err
