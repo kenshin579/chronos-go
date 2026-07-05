@@ -98,3 +98,43 @@ func TestDequeue_EmptyReturnsErrNoTask(t *testing.T) {
 		t.Errorf("err = %v, want ErrNoTask", err)
 	}
 }
+
+func TestDone_AcksAndDeletesTask(t *testing.T) {
+	client := testutil.NewRedis(t)
+	r := NewRDB(client)
+	ctx := context.Background()
+
+	if err := r.EnsureGroup(ctx, "default"); err != nil {
+		t.Fatalf("ensure group: %v", err)
+	}
+	msg := &base.TaskMessage{ID: "task-1", Kind: "k", Payload: []byte("{}"), Queue: "default"}
+	if err := r.Enqueue(ctx, msg); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	_, streamID, err := r.Dequeue(ctx, "consumer-1", 0, "default")
+	if err != nil {
+		t.Fatalf("dequeue: %v", err)
+	}
+
+	if err := r.Done(ctx, "default", streamID, "task-1"); err != nil {
+		t.Fatalf("done: %v", err)
+	}
+
+	// Task hash is gone.
+	exists, err := client.Exists(ctx, base.TaskKey("default", "task-1")).Result()
+	if err != nil {
+		t.Fatalf("exists: %v", err)
+	}
+	if exists != 0 {
+		t.Error("task hash should be deleted after Done")
+	}
+
+	// PEL is empty (the entry was acked).
+	pending, err := client.XPending(ctx, base.StreamKey("default"), ConsumerGroup).Result()
+	if err != nil {
+		t.Fatalf("xpending: %v", err)
+	}
+	if pending.Count != 0 {
+		t.Errorf("pending count = %d, want 0", pending.Count)
+	}
+}

@@ -154,3 +154,14 @@ func qnameFromStreamKey(streamKey string) string {
 	}
 	return streamKey[start:end]
 }
+
+// Done acknowledges a successfully processed task: it acks the stream entry
+// (removing it from the PEL) and deletes the task body. In M1 there is no
+// completed-retention; later milestones may keep the body in a completed ZSET.
+func (r *RDB) Done(ctx context.Context, qname, streamID, taskID string) error {
+	pipe := r.client.TxPipeline()
+	pipe.XAck(ctx, base.StreamKey(qname), ConsumerGroup, streamID)
+	pipe.Del(ctx, base.TaskKey(qname, taskID))
+	_, err := pipe.Exec(ctx)
+	return err
+}
