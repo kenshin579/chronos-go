@@ -76,19 +76,18 @@ func (r *RDB) EnsureGroup(ctx context.Context, qname string) error {
 	return nil
 }
 
-// Dequeue reads one task from the given queues using the consumer group. block
+// Dequeue reads one task from the given queue using the consumer group. block
 // is the max duration to wait for a task (0 means return immediately). It
 // returns ErrNoTask when nothing is available. The task's state is set to
 // active. streamID identifies the stream entry for later acking.
-func (r *RDB) Dequeue(ctx context.Context, consumer string, block time.Duration, qnames ...string) (*base.TaskMessage, string, error) {
-	// Build STREAMS argument: all stream keys, then one ">" per key.
-	streams := make([]string, 0, len(qnames)*2)
-	for _, q := range qnames {
-		streams = append(streams, base.StreamKey(q))
-	}
-	for range qnames {
-		streams = append(streams, ">")
-	}
+//
+// Dequeue reads a single stream so that a message delivered by XREADGROUP is
+// never dropped: with multiple STREAMS Redis may return entries for several
+// streams in one call, but reading only the first would leave the rest in the
+// consumer's PEL (already delivered via ">", so unrecoverable in M1). Callers
+// scan queues one at a time to honor priority.
+func (r *RDB) Dequeue(ctx context.Context, consumer string, block time.Duration, qname string) (*base.TaskMessage, string, error) {
+	streamKey := base.StreamKey(qname)
 
 	// go-redis maps XReadGroupArgs.Block >= 0 to a Redis "BLOCK <ms>" option,
 	// where "BLOCK 0" means block forever (not "don't block"). To honor this
@@ -103,7 +102,7 @@ func (r *RDB) Dequeue(ctx context.Context, consumer string, block time.Duration,
 	res, err := r.client.XReadGroup(ctx, &redis.XReadGroupArgs{
 		Group:    ConsumerGroup,
 		Consumer: consumer,
-		Streams:  streams,
+		Streams:  []string{streamKey, ">"},
 		Count:    1,
 		Block:    blockArg,
 	}).Result()
@@ -117,15 +116,13 @@ func (r *RDB) Dequeue(ctx context.Context, consumer string, block time.Duration,
 		return nil, "", ErrNoTask
 	}
 
-	stream := res[0]
-	entry := stream.Messages[0]
-	qname := qnameFromStreamKey(stream.Stream)
+	entry := res[0].Messages[0]
 	taskID, _ := entry.Values["task_id"].(string)
 
 	raw, err := r.client.HGet(ctx, base.TaskKey(qname, taskID), "msg").Result()
 	if err == redis.Nil {
 		// Orphan stream entry (body already gone): ack and report no task.
-		_ = r.client.XAck(ctx, stream.Stream, ConsumerGroup, entry.ID).Err()
+		_ = r.client.XAck(ctx, streamKey, ConsumerGroup, entry.ID).Err()
 		return nil, "", ErrNoTask
 	}
 	if err != nil {
@@ -142,17 +139,6 @@ func (r *RDB) Dequeue(ctx context.Context, consumer string, block time.Duration,
 	}
 
 	return msg, entry.ID, nil
-}
-
-// qnameFromStreamKey extracts the queue name from a stream key of the form
-// "chronos:{<qname>}:stream".
-func qnameFromStreamKey(streamKey string) string {
-	start := len("chronos:{")
-	end := len(streamKey) - len("}:stream")
-	if start >= end {
-		return ""
-	}
-	return streamKey[start:end]
 }
 
 // Done acknowledges a successfully processed task: it acks the stream entry

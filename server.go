@@ -92,7 +92,7 @@ func (s *Server) Start(ctx context.Context, mux *Mux) error {
 func (s *Server) fetchLoop(ctx context.Context) {
 	defer s.wg.Done()
 	queues := s.queueNames()
-
+	idx := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -100,36 +100,73 @@ func (s *Server) fetchLoop(ctx context.Context) {
 		default:
 		}
 
-		// Acquire a concurrency slot before fetching so we never hold a task
-		// without a worker to run it.
 		select {
 		case s.sem <- struct{}{}:
 		case <-ctx.Done():
 			return
 		}
 
-		msg, streamID, err := s.rdb.Dequeue(ctx, s.consumer, pollBlock, queues...)
-		if err == rdb.ErrNoTask {
-			<-s.sem
-			continue
+		var (
+			msg      *base.TaskMessage
+			streamID string
+			found    bool
+		)
+
+		// 1) 우선순위 순 논블로킹 스캔: 큐마다 스트림 하나씩 즉시 조회.
+		for _, q := range queues {
+			m, sid, err := s.rdb.Dequeue(ctx, s.consumer, -1, q)
+			if err == rdb.ErrNoTask {
+				continue
+			}
+			if err != nil {
+				if ctx.Err() != nil {
+					<-s.sem
+					return
+				}
+				s.logger.Error("chronos: dequeue failed", "queue", q, "error", err)
+				continue
+			}
+			msg, streamID, found = m, sid, true
+			break
 		}
-		if err != nil {
-			if ctx.Err() != nil {
+
+		// 2) 아무것도 없으면 라운드로빈으로 한 큐에 블로킹(응답성 유지, 기아 방지).
+		if !found {
+			if len(queues) == 0 {
 				<-s.sem
 				return
 			}
-			s.logger.Error("chronos: dequeue failed", "error", err)
+			q := queues[idx%len(queues)]
+			idx++
+			m, sid, err := s.rdb.Dequeue(ctx, s.consumer, pollBlock, q)
+			if err == rdb.ErrNoTask {
+				<-s.sem
+				continue
+			}
+			if err != nil {
+				if ctx.Err() != nil {
+					<-s.sem
+					return
+				}
+				s.logger.Error("chronos: dequeue failed", "queue", q, "error", err)
+				<-s.sem
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
+			msg, streamID, found = m, sid, true
+		}
+
+		if !found {
 			<-s.sem
-			time.Sleep(100 * time.Millisecond)
 			continue
 		}
 
 		s.wg.Add(1)
-		go func() {
+		go func(qname, sid string, m *base.TaskMessage) {
 			defer s.wg.Done()
 			defer func() { <-s.sem }()
-			s.process(ctx, msg.Queue, streamID, msg)
-		}()
+			s.process(ctx, qname, sid, m)
+		}(msg.Queue, streamID, msg)
 	}
 }
 
