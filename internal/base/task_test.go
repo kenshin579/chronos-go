@@ -50,6 +50,22 @@ func TestTaskMessage_M2Fields_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestTaskMessage_UniqueKey_RoundTrip(t *testing.T) {
+	msg := &TaskMessage{ID: "t1", Kind: "k", Payload: []byte("{}"), Queue: "default",
+		UniqueKey: "chronos:{default}:unique:k:deadbeef"}
+	encoded, err := EncodeMessage(msg)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	got, err := DecodeMessage(encoded)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.UniqueKey != msg.UniqueKey {
+		t.Errorf("UniqueKey = %q, want %q", got.UniqueKey, msg.UniqueKey)
+	}
+}
+
 func TestTaskState_String(t *testing.T) {
 	if StateActive.String() != "active" {
 		t.Errorf("StateActive.String() = %q, want %q", StateActive.String(), "active")
