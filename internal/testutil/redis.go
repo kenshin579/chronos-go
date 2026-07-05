@@ -15,6 +15,12 @@ const TestDB = 15
 // NewRedis connects to a test Redis instance and returns a client whose
 // database is flushed before the test and cleaned up afterwards. If no Redis
 // is reachable the test is skipped rather than failed.
+//
+// All packages share a single logical database (TestDB) and flush it, so their
+// test binaries must not run concurrently against it. Run the suite with
+// `go test ./... -p 1` (see the Makefile's `test` target) so package binaries
+// execute sequentially; the default per-package parallelism would let one
+// package's FlushDB wipe another's data mid-run.
 func NewRedis(t *testing.T) redis.UniversalClient {
 	t.Helper()
 
