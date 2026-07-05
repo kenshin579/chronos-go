@@ -59,3 +59,69 @@ func TestScheduleUnique_SecondIsRejected(t *testing.T) {
 		t.Errorf("first task not scheduled: %v", err)
 	}
 }
+
+func TestDone_ReleasesUniqueLock(t *testing.T) {
+	client := testutil.NewRedis(t)
+	r := NewRDB(client)
+	ctx := context.Background()
+
+	msg := uniqueMsg("t1", "default")
+	if err := r.EnsureGroup(ctx, "default"); err != nil {
+		t.Fatalf("ensure group: %v", err)
+	}
+	if err := r.EnqueueUnique(ctx, msg, time.Minute); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	got, streamID, err := r.Dequeue(ctx, "c1", 0, "default")
+	if err != nil {
+		t.Fatalf("dequeue: %v", err)
+	}
+
+	if err := r.Done(ctx, "default", streamID, got); err != nil {
+		t.Fatalf("done: %v", err)
+	}
+	// Lock released → a new identical task can be enqueued.
+	if exists, _ := client.Exists(ctx, msg.UniqueKey).Result(); exists != 0 {
+		t.Error("unique lock should be released after Done")
+	}
+}
+
+func TestRetry_KeepsUniqueLock_ArchiveReleases(t *testing.T) {
+	client := testutil.NewRedis(t)
+	r := NewRDB(client)
+	ctx := context.Background()
+	if err := r.EnsureGroup(ctx, "default"); err != nil {
+		t.Fatalf("ensure group: %v", err)
+	}
+
+	// Retry keeps the lock (task still in flight).
+	msg := uniqueMsg("t1", "default")
+	msg.MaxRetry = 5
+	if err := r.EnqueueUnique(ctx, msg, time.Minute); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	got, streamID, _ := r.Dequeue(ctx, "c1", 0, "default")
+	got.Retried = 1
+	if err := r.Retry(ctx, "default", streamID, got, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if exists, _ := client.Exists(ctx, msg.UniqueKey).Result(); exists != 1 {
+		t.Error("unique lock must be kept across a retry")
+	}
+
+	// Archive releases the lock (terminal).
+	// Bring it back to the stream and dequeue to get a fresh streamID.
+	if _, err := r.ForwardRetry(ctx, "default", time.Now().Add(2*time.Hour), 10); err != nil {
+		t.Fatalf("forward: %v", err)
+	}
+	got2, streamID2, err := r.Dequeue(ctx, "c1", 0, "default")
+	if err != nil {
+		t.Fatalf("dequeue2: %v", err)
+	}
+	if err := r.Archive(ctx, "default", streamID2, got2, time.Now()); err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+	if exists, _ := client.Exists(ctx, msg.UniqueKey).Result(); exists != 0 {
+		t.Error("unique lock should be released after Archive")
+	}
+}
