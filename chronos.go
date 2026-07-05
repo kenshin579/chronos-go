@@ -18,6 +18,10 @@ const DefaultQueue = "default"
 // DefaultMaxRetry is the retry budget used when WithMaxRetry is not given.
 const DefaultMaxRetry = 25
 
+// ErrDuplicateTask is returned by Enqueue when WithUnique is used and an
+// identical task already holds the unique lock.
+var ErrDuplicateTask = rdb.ErrDuplicateTask
+
 // TaskArgs is implemented by every task payload type. Kind returns a stable
 // identifier used to route the task to its handler; it MUST be defined on a
 // value receiver so it can be called on the zero value during registration.
@@ -66,7 +70,8 @@ type enqueueOptions struct {
 	taskID    string
 	maxRetry  int
 	noArchive bool
-	processAt time.Time // zero = immediate
+	processAt time.Time     // zero = immediate
+	uniqueTTL time.Duration // > 0 enables unique deduplication
 }
 
 // Option customizes a single Enqueue call.
@@ -120,6 +125,19 @@ func WithProcessIn(d time.Duration) Option {
 	return optionFunc(func(o *enqueueOptions) { o.processAt = time.Now().Add(d) })
 }
 
+// WithUnique deduplicates tasks by (kind + payload) for the lifetime of the
+// task: while a matching task is anywhere in the pipeline (pending, retrying,
+// scheduled), enqueueing another returns ErrDuplicateTask. ttl is an
+// orphan-safety expiry used if the owning process dies before the task reaches
+// a terminal state; it does not cap how long the lock is genuinely held.
+func WithUnique(ttl time.Duration) Option {
+	return optionFunc(func(o *enqueueOptions) {
+		if ttl > 0 {
+			o.uniqueTTL = ttl
+		}
+	})
+}
+
 // Enqueue serializes args and makes the task available for immediate
 // processing. It is a package-level function rather than a method because Go
 // methods cannot have type parameters.
@@ -147,12 +165,25 @@ func Enqueue[T TaskArgs](ctx context.Context, c *Client, args T, opts ...Option)
 		MaxRetry:  options.maxRetry,
 		NoArchive: options.noArchive,
 	}
-	if !options.processAt.IsZero() && options.processAt.After(time.Now()) {
-		if err := c.rdb.Schedule(ctx, msg, options.processAt); err != nil {
-			return nil, err
-		}
-	} else if err := c.rdb.Enqueue(ctx, msg); err != nil {
-		return nil, err
+	scheduled := !options.processAt.IsZero() && options.processAt.After(time.Now())
+	unique := options.uniqueTTL > 0
+	if unique {
+		msg.UniqueKey = base.UniqueKey(options.queue, base.UniqueSuffix(msg.Kind, payload))
+	}
+
+	var err2 error
+	switch {
+	case unique && scheduled:
+		err2 = c.rdb.ScheduleUnique(ctx, msg, options.processAt, options.uniqueTTL)
+	case unique:
+		err2 = c.rdb.EnqueueUnique(ctx, msg, options.uniqueTTL)
+	case scheduled:
+		err2 = c.rdb.Schedule(ctx, msg, options.processAt)
+	default:
+		err2 = c.rdb.Enqueue(ctx, msg)
+	}
+	if err2 != nil {
+		return nil, err2
 	}
 
 	return &TaskInfo{ID: id, Kind: msg.Kind, Queue: msg.Queue}, nil
