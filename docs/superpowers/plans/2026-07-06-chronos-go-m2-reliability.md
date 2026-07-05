@@ -26,6 +26,8 @@
 - `chronos.go`의 `enqueueOptions{queue, taskID}`, `Option`/`optionFunc`, `Enqueue[T]`
 - `ServerConfig{Queues, Concurrency, Logger}`
 
+> **구현 중 정정 사항 (실제 코드가 정답):** Task 7의 `TestServer_CrashedTaskIsRecovered`가 `RecoverMinIdle: 0`으로 즉시 회수를 의도했으나, `NewServer`의 `RecoverMinIdle <= 0 → 30s` 기본값과 충돌한다(zero-value로는 "미설정"과 "명시적 0"을 구분 못 함). "즉시 회수를 기본값으로" 만드는 것은 heartbeat 없는 M2에서 in-flight 태스크를 중복 실행시키는 위험한 기본이므로, **안전한 30s 기본을 유지하고 테스트가 `RecoverMinIdle: 1 * time.Millisecond`를 명시**하도록 정정했다. (커밋 `5e8b493`)
+
 ---
 
 ## File Structure
