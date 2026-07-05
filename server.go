@@ -2,6 +2,7 @@ package chronos
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -73,6 +74,9 @@ func (s *Server) queueNames() []string {
 // Shutdown is called or ctx is cancelled.
 func (s *Server) Start(ctx context.Context, mux *Mux) error {
 	s.mux = mux
+	if len(s.cfg.Queues) == 0 {
+		return errors.New("chronos: server requires at least one queue")
+	}
 	for _, q := range s.queueNames() {
 		if err := s.rdb.EnsureGroup(ctx, q); err != nil {
 			return err
@@ -112,7 +116,7 @@ func (s *Server) fetchLoop(ctx context.Context) {
 			found    bool
 		)
 
-		// 1) 우선순위 순 논블로킹 스캔: 큐마다 스트림 하나씩 즉시 조회.
+		// 1) 구성된 큐를 순회하며 논블로킹 조회 (우선순위 가중치는 M2).
 		for _, q := range queues {
 			m, sid, err := s.rdb.Dequeue(ctx, s.consumer, -1, q)
 			if err == rdb.ErrNoTask {
@@ -178,7 +182,10 @@ func (s *Server) process(ctx context.Context, qname, streamID string, msg *base.
 		s.logger.Error("chronos: task failed",
 			"kind", msg.Kind, "id", msg.ID, "error", err)
 	}
-	if err := s.rdb.Done(ctx, qname, streamID, msg.ID); err != nil {
+	// Ack는 shutdown 취소보다 오래 살아야 한다: 이미 끝난 태스크를 unacked로 남기면
+	// M1에서 PEL/hash 누수, M2 recoverer 도입 시 중복 실행이 된다.
+	ackCtx := context.WithoutCancel(ctx)
+	if err := s.rdb.Done(ackCtx, qname, streamID, msg.ID); err != nil {
 		s.logger.Error("chronos: ack failed", "id", msg.ID, "error", err)
 	}
 }

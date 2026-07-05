@@ -2,10 +2,13 @@ package chronos
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/kenshin579/chronos-go/internal/base"
+	"github.com/kenshin579/chronos-go/internal/rdb"
 	"github.com/kenshin579/chronos-go/internal/testutil"
 )
 
@@ -67,4 +70,81 @@ func TestServer_ShutdownIsClean(t *testing.T) {
 	if err := srv.Shutdown(shutCtx); err != nil {
 		t.Fatalf("shutdown: %v", err)
 	}
+}
+
+// eventually는 cond가 참이 될 때까지 최대 timeout 동안 폴링한다.
+func eventually(t *testing.T, timeout time.Duration, cond func() bool, msg string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("condition not met within %v: %s", timeout, msg)
+}
+
+func TestServer_ErrorHandlerAcksAndDeletes(t *testing.T) {
+	client := testutil.NewRedis(t)
+	c := NewClient(client)
+	defer c.Close()
+
+	handled := make(chan struct{}, 1)
+	mux := NewMux()
+	AddHandler(mux, func(ctx context.Context, task *Task[emailArgs]) error {
+		select {
+		case handled <- struct{}{}:
+		default:
+		}
+		return errors.New("boom")
+	})
+
+	srv := NewServer(client, ServerConfig{Queues: map[string]int{"default": 1}, Concurrency: 2})
+	ctx := context.Background()
+	if err := srv.Start(ctx, mux); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	info, err := Enqueue(ctx, c, emailArgs{UserID: "u1"})
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	select {
+	case <-handled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler not invoked")
+	}
+
+	eventually(t, 5*time.Second, func() bool {
+		p, _ := client.XPending(ctx, base.StreamKey("default"), rdb.ConsumerGroup).Result()
+		exists, _ := client.Exists(ctx, base.TaskKey("default", info.ID)).Result()
+		return p != nil && p.Count == 0 && exists == 0
+	}, "error task should be acked and deleted (no retry in M1)")
+}
+
+func TestServer_UnregisteredKindAcksAndDeletes(t *testing.T) {
+	client := testutil.NewRedis(t)
+	c := NewClient(client)
+	defer c.Close()
+
+	srv := NewServer(client, ServerConfig{Queues: map[string]int{"default": 1}, Concurrency: 2})
+	ctx := context.Background()
+	if err := srv.Start(ctx, NewMux()); err != nil { // 핸들러 없음
+		t.Fatalf("start: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	info, err := Enqueue(ctx, c, emailArgs{UserID: "u1"})
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	eventually(t, 5*time.Second, func() bool {
+		p, _ := client.XPending(ctx, base.StreamKey("default"), rdb.ConsumerGroup).Result()
+		exists, _ := client.Exists(ctx, base.TaskKey("default", info.ID)).Result()
+		return p != nil && p.Count == 0 && exists == 0
+	}, "unregistered-kind task should be acked and deleted")
 }

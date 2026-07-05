@@ -5,6 +5,7 @@ package rdb
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -70,7 +71,7 @@ var ErrNoTask = errors.New("chronos: no task available")
 // before any task has been enqueued.
 func (r *RDB) EnsureGroup(ctx context.Context, qname string) error {
 	err := r.client.XGroupCreateMkStream(ctx, base.StreamKey(qname), ConsumerGroup, "$").Err()
-	if err != nil && err.Error() != "BUSYGROUP Consumer Group name already exists" {
+	if err != nil && !strings.HasPrefix(err.Error(), "BUSYGROUP") {
 		return err
 	}
 	return nil
