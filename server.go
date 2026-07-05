@@ -3,6 +3,7 @@ package chronos
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -20,13 +21,29 @@ const pollBlock = 1 * time.Second
 
 // ServerConfig configures a Server.
 type ServerConfig struct {
-	// Queues maps queue name to weight. In M1 only the keys are used (all
-	// queues are read equally); weighted priority is a later enhancement.
+	// Queues maps queue name to weight. Only the keys are used today (all queues
+	// are read equally); weighted priority is a later enhancement.
 	Queues map[string]int
 	// Concurrency is the max number of tasks processed simultaneously.
 	Concurrency int
 	// Logger receives operational logs. Defaults to slog.Default().
 	Logger *slog.Logger
+
+	// RetryDelayFunc computes the backoff before a retry. Defaults to
+	// DefaultRetryDelay (exponential + full jitter).
+	RetryDelayFunc RetryDelayFunc
+	// OnDeadLetter is invoked when a task exhausts its retries (or returns a
+	// SkipRetry error). It fires whether the task is archived or discarded.
+	OnDeadLetter func(ctx context.Context, info *TaskInfo, err error)
+
+	// ForwardInterval is how often the retry ZSET is scanned for due tasks.
+	// Defaults to 1s.
+	ForwardInterval time.Duration
+	// RecoverInterval is how often stuck PEL entries are reclaimed. Defaults to 15s.
+	RecoverInterval time.Duration
+	// RecoverMinIdle is how long a PEL entry must be idle before it is treated as
+	// abandoned. Defaults to 30s. Handlers that can run longer should raise this.
+	RecoverMinIdle time.Duration
 }
 
 // Server fetches tasks from Redis and dispatches them to handlers.
@@ -50,6 +67,18 @@ func NewServer(r redis.UniversalClient, cfg ServerConfig) *Server {
 	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.Default()
+	}
+	if cfg.RetryDelayFunc == nil {
+		cfg.RetryDelayFunc = DefaultRetryDelay
+	}
+	if cfg.ForwardInterval <= 0 {
+		cfg.ForwardInterval = 1 * time.Second
+	}
+	if cfg.RecoverInterval <= 0 {
+		cfg.RecoverInterval = 15 * time.Second
+	}
+	if cfg.RecoverMinIdle <= 0 {
+		cfg.RecoverMinIdle = 30 * time.Second
 	}
 	return &Server{
 		rdb:      rdb.NewRDB(r),
@@ -174,19 +203,65 @@ func (s *Server) fetchLoop(ctx context.Context) {
 	}
 }
 
-// process runs the handler for one task and acks it. In M1 a handler error is
-// logged and the task is acked+deleted (no retry). M2 replaces this with retry
-// routing.
+// process runs the handler for one task, recovering panics, and routes the
+// outcome: success acks and deletes; a retryable error moves the task to the
+// retry ZSET with backoff (until the retry budget is exhausted); a SkipRetry
+// error or an exhausted budget dead-letters the task and fires OnDeadLetter.
 func (s *Server) process(ctx context.Context, qname, streamID string, msg *base.TaskMessage) {
-	if err := s.mux.dispatch(ctx, msg); err != nil {
-		s.logger.Error("chronos: task failed",
-			"kind", msg.Kind, "id", msg.ID, "error", err)
+	err := s.dispatchSafely(ctx, msg)
+
+	// Ack/move operations must outlive shutdown cancellation so a finished task
+	// is never left dangling in the PEL.
+	opCtx := context.WithoutCancel(ctx)
+
+	if err == nil {
+		if derr := s.rdb.Done(opCtx, qname, streamID, msg.ID); derr != nil {
+			s.logger.Error("chronos: ack failed", "id", msg.ID, "error", derr)
+		}
+		return
 	}
-	// Ack는 shutdown 취소보다 오래 살아야 한다: 이미 끝난 태스크를 unacked로 남기면
-	// M1에서 PEL/hash 누수, M2 recoverer 도입 시 중복 실행이 된다.
-	ackCtx := context.WithoutCancel(ctx)
-	if err := s.rdb.Done(ackCtx, qname, streamID, msg.ID); err != nil {
-		s.logger.Error("chronos: ack failed", "id", msg.ID, "error", err)
+
+	s.logger.Error("chronos: task failed",
+		"kind", msg.Kind, "id", msg.ID, "retried", msg.Retried, "error", err)
+
+	// Dead-letter when the error is non-retryable or the budget is exhausted.
+	if asSkipRetry(err) || msg.Retried >= msg.MaxRetry {
+		s.deadLetter(opCtx, qname, streamID, msg, err)
+		return
+	}
+
+	msg.Retried++
+	retryAt := time.Now().Add(s.cfg.RetryDelayFunc(msg.Retried, err))
+	if rerr := s.rdb.Retry(opCtx, qname, streamID, msg, retryAt); rerr != nil {
+		s.logger.Error("chronos: retry scheduling failed", "id", msg.ID, "error", rerr)
+	}
+}
+
+// dispatchSafely runs the handler and converts a panic into an error so a
+// misbehaving handler cannot crash the worker.
+func (s *Server) dispatchSafely(ctx context.Context, msg *base.TaskMessage) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("chronos: handler panic: %v", r)
+			s.logger.Error("chronos: handler panicked",
+				"kind", msg.Kind, "id", msg.ID, "panic", r)
+		}
+	}()
+	return s.mux.dispatch(ctx, msg)
+}
+
+// deadLetter archives the task (or discards it when NoArchive is set) and fires
+// the OnDeadLetter hook.
+func (s *Server) deadLetter(ctx context.Context, qname, streamID string, msg *base.TaskMessage, cause error) {
+	if msg.NoArchive {
+		if derr := s.rdb.Done(ctx, qname, streamID, msg.ID); derr != nil {
+			s.logger.Error("chronos: discard failed", "id", msg.ID, "error", derr)
+		}
+	} else if aerr := s.rdb.Archive(ctx, qname, streamID, msg, time.Now()); aerr != nil {
+		s.logger.Error("chronos: archive failed", "id", msg.ID, "error", aerr)
+	}
+	if s.cfg.OnDeadLetter != nil {
+		s.cfg.OnDeadLetter(ctx, &TaskInfo{ID: msg.ID, Kind: msg.Kind, Queue: msg.Queue}, cause)
 	}
 }
 

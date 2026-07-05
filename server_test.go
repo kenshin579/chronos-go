@@ -85,7 +85,7 @@ func eventually(t *testing.T, timeout time.Duration, cond func() bool, msg strin
 	t.Fatalf("condition not met within %v: %s", timeout, msg)
 }
 
-func TestServer_ErrorHandlerAcksAndDeletes(t *testing.T) {
+func TestServer_ErrorHandlerMovesToRetry(t *testing.T) {
 	client := testutil.NewRedis(t)
 	c := NewClient(client)
 	defer c.Close()
@@ -100,14 +100,18 @@ func TestServer_ErrorHandlerAcksAndDeletes(t *testing.T) {
 		return errors.New("boom")
 	})
 
-	srv := NewServer(client, ServerConfig{Queues: map[string]int{"default": 1}, Concurrency: 2})
+	srv := NewServer(client, ServerConfig{
+		Queues:         map[string]int{"default": 1},
+		Concurrency:    2,
+		RetryDelayFunc: func(retried int, err error) time.Duration { return time.Hour },
+	})
 	ctx := context.Background()
 	if err := srv.Start(ctx, mux); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	defer srv.Shutdown(context.Background())
 
-	info, err := Enqueue(ctx, c, emailArgs{UserID: "u1"})
+	info, err := Enqueue(ctx, c, emailArgs{UserID: "u1"}, WithMaxRetry(3))
 	if err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
@@ -120,31 +124,33 @@ func TestServer_ErrorHandlerAcksAndDeletes(t *testing.T) {
 
 	eventually(t, 5*time.Second, func() bool {
 		p, _ := client.XPending(ctx, base.StreamKey("default"), rdb.ConsumerGroup).Result()
-		exists, _ := client.Exists(ctx, base.TaskKey("default", info.ID)).Result()
-		return p != nil && p.Count == 0 && exists == 0
-	}, "error task should be acked and deleted (no retry in M1)")
+		inRetry := client.ZScore(ctx, base.RetryKey("default"), info.ID).Err() == nil
+		return p != nil && p.Count == 0 && inRetry
+	}, "error task should be acked out of the PEL and moved to the retry ZSET")
 }
 
-func TestServer_UnregisteredKindAcksAndDeletes(t *testing.T) {
+func TestServer_UnregisteredKindMovesToRetry(t *testing.T) {
 	client := testutil.NewRedis(t)
 	c := NewClient(client)
 	defer c.Close()
 
-	srv := NewServer(client, ServerConfig{Queues: map[string]int{"default": 1}, Concurrency: 2})
+	srv := NewServer(client, ServerConfig{
+		Queues:         map[string]int{"default": 1},
+		Concurrency:    2,
+		RetryDelayFunc: func(retried int, err error) time.Duration { return time.Hour },
+	})
 	ctx := context.Background()
-	if err := srv.Start(ctx, NewMux()); err != nil { // 핸들러 없음
+	if err := srv.Start(ctx, NewMux()); err != nil { // no handlers
 		t.Fatalf("start: %v", err)
 	}
 	defer srv.Shutdown(context.Background())
 
-	info, err := Enqueue(ctx, c, emailArgs{UserID: "u1"})
+	info, err := Enqueue(ctx, c, emailArgs{UserID: "u1"}, WithMaxRetry(3))
 	if err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
 
 	eventually(t, 5*time.Second, func() bool {
-		p, _ := client.XPending(ctx, base.StreamKey("default"), rdb.ConsumerGroup).Result()
-		exists, _ := client.Exists(ctx, base.TaskKey("default", info.ID)).Result()
-		return p != nil && p.Count == 0 && exists == 0
-	}, "unregistered-kind task should be acked and deleted")
+		return client.ZScore(ctx, base.RetryKey("default"), info.ID).Err() == nil
+	}, "unregistered-kind task should be retried (a handler may be registered later)")
 }
