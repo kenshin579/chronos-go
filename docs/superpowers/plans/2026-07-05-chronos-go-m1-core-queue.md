@@ -10,6 +10,11 @@
 
 **설계 문서:** `docs/superpowers/specs/2026-07-05-multi-cluster-scheduler-design.md` (섹션 2~4)
 
+> **구현 중 정정 사항 (실제 코드가 정답, 아래 Task 5·9 코드보다 우선):**
+> 1. **Dequeue는 단일 큐 대상이다.** 계획 초안의 `Dequeue(ctx, consumer, block, qnames ...string)`가 여러 스트림을 한 번의 `XREADGROUP`으로 조회하면, Redis가 스트림마다 엔트리를 반환하는데 `res[0]`만 읽어 나머지 스트림의 메시지가 PEL에 갇혀 유실된다(M1엔 recoverer 없음). 실제 구현은 `Dequeue(ctx, consumer, block, qname string)` 단일 스트림으로 바꾸고, `server.go`의 `fetchLoop`이 "우선순위 순 논블로킹 스캔 → 라운드로빈 블로킹"으로 다중 큐 공정성을 처리한다. (커밋 `775b5f8`)
+> 2. **go-redis의 `Block: 0`은 "즉시 반환"이 아니라 "영원히 블록"이다.** `Dequeue`는 `block <= 0`이면 내부적으로 `-1`(BLOCK 옵션 생략, non-blocking)로 변환한다. (커밋 `5da7811`)
+> M2 계획은 위 실제 시그니처를 기준으로 작성한다.
+
 **M1 범위 경계 (이 계획에 포함되지 않는 것):**
 - 재시도/백오프, retry ZSET → M2
 - 크래시 복구(XAUTOCLAIM/recoverer), dead-letter → M2
