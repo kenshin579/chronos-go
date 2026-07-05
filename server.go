@@ -53,9 +53,9 @@ type ServerConfig struct {
 	// RecoverInterval is how often stuck PEL entries are reclaimed. Defaults to 15s.
 	RecoverInterval time.Duration
 	// RecoverMinIdle is how long a PEL entry must be idle before it is treated as
-	// abandoned. A zero value reclaims immediately; a negative value defaults to
-	// 30s. Handlers that can run longer than this may be reclaimed and reprocessed
-	// concurrently (at-least-once), so raise it comfortably above handler duration.
+	// abandoned. Defaults to 30s when unset (<= 0). Handlers that can run longer
+	// than this may be reclaimed and reprocessed concurrently (at-least-once), so
+	// raise it comfortably above the expected handler duration.
 	RecoverMinIdle time.Duration
 }
 
@@ -90,7 +90,7 @@ func NewServer(r redis.UniversalClient, cfg ServerConfig) *Server {
 	if cfg.RecoverInterval <= 0 {
 		cfg.RecoverInterval = 15 * time.Second
 	}
-	if cfg.RecoverMinIdle < 0 {
+	if cfg.RecoverMinIdle <= 0 {
 		cfg.RecoverMinIdle = 30 * time.Second
 	}
 	return &Server{

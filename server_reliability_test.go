@@ -198,7 +198,7 @@ func TestServer_CrashedTaskIsRecovered(t *testing.T) {
 		Concurrency:     2,
 		ForwardInterval: 100 * time.Millisecond,
 		RecoverInterval: 200 * time.Millisecond,
-		RecoverMinIdle:  0, // reclaim immediately for the test
+		RecoverMinIdle:  1 * time.Millisecond, // tiny so the crashed entry is reclaimed fast
 	})
 	if err := srv.Start(ctx, mux); err != nil {
 		t.Fatalf("start: %v", err)
