@@ -3,6 +3,7 @@ package chronos
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -65,6 +66,7 @@ type enqueueOptions struct {
 	taskID    string
 	maxRetry  int
 	noArchive bool
+	processAt time.Time // zero = immediate
 }
 
 // Option customizes a single Enqueue call.
@@ -106,6 +108,18 @@ func WithDeadLetterDiscard() Option {
 	return optionFunc(func(o *enqueueOptions) { o.noArchive = true })
 }
 
+// WithProcessAt schedules the task to first become available at t. A non-future
+// time enqueues immediately.
+func WithProcessAt(t time.Time) Option {
+	return optionFunc(func(o *enqueueOptions) { o.processAt = t })
+}
+
+// WithProcessIn schedules the task to first become available after d. A
+// non-positive d enqueues immediately.
+func WithProcessIn(d time.Duration) Option {
+	return optionFunc(func(o *enqueueOptions) { o.processAt = time.Now().Add(d) })
+}
+
 // Enqueue serializes args and makes the task available for immediate
 // processing. It is a package-level function rather than a method because Go
 // methods cannot have type parameters.
@@ -133,7 +147,11 @@ func Enqueue[T TaskArgs](ctx context.Context, c *Client, args T, opts ...Option)
 		MaxRetry:  options.maxRetry,
 		NoArchive: options.noArchive,
 	}
-	if err := c.rdb.Enqueue(ctx, msg); err != nil {
+	if !options.processAt.IsZero() && options.processAt.After(time.Now()) {
+		if err := c.rdb.Schedule(ctx, msg, options.processAt); err != nil {
+			return nil, err
+		}
+	} else if err := c.rdb.Enqueue(ctx, msg); err != nil {
 		return nil, err
 	}
 
