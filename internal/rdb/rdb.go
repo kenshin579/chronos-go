@@ -1,0 +1,154 @@
+// Package rdb implements the Redis operations backing chronos-go: enqueueing
+// tasks, dequeueing via a consumer group, and acking completion.
+package rdb
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"time"
+
+	"github.com/redis/go-redis/v9"
+
+	"github.com/kenshin579/chronos-go/internal/base"
+)
+
+// ConsumerGroup is the single consumer group name used on every queue stream.
+const ConsumerGroup = "chronos"
+
+// RDB wraps a Redis client with chronos-go's task operations.
+type RDB struct {
+	client redis.UniversalClient
+}
+
+// NewRDB returns an RDB backed by the given Redis client.
+func NewRDB(client redis.UniversalClient) *RDB {
+	return &RDB{client: client}
+}
+
+// Client exposes the underlying Redis client (used by higher layers for
+// consumer-group setup and shutdown).
+func (r *RDB) Client() redis.UniversalClient {
+	return r.client
+}
+
+// enqueueCmd atomically stores the task body and appends its ID to the stream.
+// KEYS[1] task hash, KEYS[2] stream. ARGV[1] encoded msg, ARGV[2] state, ARGV[3] task id.
+var enqueueCmd = redis.NewScript(`
+redis.call("HSET", KEYS[1], "msg", ARGV[1], "state", ARGV[2])
+redis.call("XADD", KEYS[2], "*", "task_id", ARGV[3])
+return 1
+`)
+
+// Enqueue stores a task and makes it immediately available for processing.
+func (r *RDB) Enqueue(ctx context.Context, msg *base.TaskMessage) error {
+	msg.State = base.StatePending
+	encoded, err := base.EncodeMessage(msg)
+	if err != nil {
+		return err
+	}
+
+	// Register the queue name in the global index. Separate from the atomic
+	// script because QueuesKey has no hash tag (different cluster slot).
+	if err := r.client.SAdd(ctx, base.QueuesKey(), msg.Queue).Err(); err != nil {
+		return err
+	}
+
+	keys := []string{
+		base.TaskKey(msg.Queue, msg.ID),
+		base.StreamKey(msg.Queue),
+	}
+	argv := []interface{}{encoded, int(base.StatePending), msg.ID}
+	return enqueueCmd.Run(ctx, r.client, keys, argv...).Err()
+}
+
+// ErrNoTask is returned by Dequeue when no task is available within the block
+// duration.
+var ErrNoTask = errors.New("chronos: no task available")
+
+// EnsureGroup creates the consumer group on a queue's stream if it does not
+// already exist. MKSTREAM creates the stream too, so this is safe to call
+// before any task has been enqueued.
+func (r *RDB) EnsureGroup(ctx context.Context, qname string) error {
+	err := r.client.XGroupCreateMkStream(ctx, base.StreamKey(qname), ConsumerGroup, "$").Err()
+	if err != nil && !strings.HasPrefix(err.Error(), "BUSYGROUP") {
+		return err
+	}
+	return nil
+}
+
+// Dequeue reads one task from the given queue using the consumer group. block
+// is the max duration to wait for a task (0 means return immediately). It
+// returns ErrNoTask when nothing is available. The task's state is set to
+// active. streamID identifies the stream entry for later acking.
+//
+// Dequeue reads a single stream so that a message delivered by XREADGROUP is
+// never dropped: with multiple STREAMS Redis may return entries for several
+// streams in one call, but reading only the first would leave the rest in the
+// consumer's PEL (already delivered via ">", so unrecoverable in M1). Callers
+// scan queues one at a time to honor priority.
+func (r *RDB) Dequeue(ctx context.Context, consumer string, block time.Duration, qname string) (*base.TaskMessage, string, error) {
+	streamKey := base.StreamKey(qname)
+
+	// go-redis maps XReadGroupArgs.Block >= 0 to a Redis "BLOCK <ms>" option,
+	// where "BLOCK 0" means block forever (not "don't block"). To honor this
+	// method's documented contract (0 == return immediately), translate a
+	// non-positive block into -1, which makes go-redis omit the BLOCK option
+	// entirely (an immediate, non-blocking XREADGROUP).
+	blockArg := block
+	if blockArg <= 0 {
+		blockArg = -1
+	}
+
+	res, err := r.client.XReadGroup(ctx, &redis.XReadGroupArgs{
+		Group:    ConsumerGroup,
+		Consumer: consumer,
+		Streams:  []string{streamKey, ">"},
+		Count:    1,
+		Block:    blockArg,
+	}).Result()
+	if err == redis.Nil {
+		return nil, "", ErrNoTask
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	if len(res) == 0 || len(res[0].Messages) == 0 {
+		return nil, "", ErrNoTask
+	}
+
+	entry := res[0].Messages[0]
+	taskID, _ := entry.Values["task_id"].(string)
+
+	raw, err := r.client.HGet(ctx, base.TaskKey(qname, taskID), "msg").Result()
+	if err == redis.Nil {
+		// Orphan stream entry (body already gone): ack and report no task.
+		_ = r.client.XAck(ctx, streamKey, ConsumerGroup, entry.ID).Err()
+		return nil, "", ErrNoTask
+	}
+	if err != nil {
+		return nil, "", err
+	}
+
+	msg, err := base.DecodeMessage([]byte(raw))
+	if err != nil {
+		return nil, "", err
+	}
+	msg.State = base.StateActive
+	if err := r.client.HSet(ctx, base.TaskKey(qname, taskID), "state", int(base.StateActive)).Err(); err != nil {
+		return nil, "", err
+	}
+
+	return msg, entry.ID, nil
+}
+
+// Done acknowledges a successfully processed task: it acks the stream entry
+// (removing it from the PEL) and deletes the task body. In M1 there is no
+// completed-retention; later milestones may keep the body in a completed ZSET.
+func (r *RDB) Done(ctx context.Context, qname, streamID, taskID string) error {
+	pipe := r.client.TxPipeline()
+	pipe.XAck(ctx, base.StreamKey(qname), ConsumerGroup, streamID)
+	pipe.Del(ctx, base.TaskKey(qname, taskID))
+	_, err := pipe.Exec(ctx)
+	return err
+}
