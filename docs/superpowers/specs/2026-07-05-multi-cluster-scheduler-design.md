@@ -264,6 +264,11 @@ asynq 결함: 락 TTL과 처리 시간 독립 → 처리 중 만료 → 중복. 
 저장하고 **태스크가 최종 상태(completed/archived) 도달 시 상태 전이 Lua 안에서 원자 해제**. TTL은
 "고아 락 안전망"으로만 동작. uniqueness가 대기+처리 중 전 구간 커버.
 
+> **구현 정정 (M3, 2026-07-06):** "TTL이 고아 안전망으로만 동작"하려면 처리 중 TTL 갱신(heartbeat)이
+> 필요하다. M3는 최종 상태 해제만 구현하고 **TTL 갱신은 heartbeat 마일스톤으로 연기**했다. 따라서 M3에서
+> TTL은 실질적 상한을 겸하며, TTL을 태스크 총 생애보다 넉넉히 잡아야 uniqueness가 생애 전체를 덮는다.
+> "TTL과 무관한 완전한 생애 uniqueness"(asynq 대비 진짜 개선)는 heartbeat 마일스톤에서 완성된다.
+
 ### Misfire 정책 (잡별 옵션)
 
 ```go

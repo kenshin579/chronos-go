@@ -4,7 +4,7 @@
 
 **Goal:** M2 신뢰성 계층 위에 (1) 미래 시각 지연 실행(`WithProcessIn`/`WithProcessAt` → scheduled ZSET)과 (2) 중복 억제 unique 락(`WithUnique` → 처리 완료까지 유지되는 dedup 락)을 추가한다.
 
-**Architecture:** 지연 태스크는 stream이 아니라 scheduled ZSET(score = process_at)에 넣고, forwarder가 retry ZSET과 동일하게 due된 것을 stream으로 승격한다(M2 `forwardCmd` 재사용). unique 락은 enqueue/schedule 시 `SET NX`로 원자 획득하고(중복이면 `ErrDuplicateTask`), **태스크가 최종 상태(완료/보관/폐기)에 도달할 때 해제**한다 — 재시도 중에도 유지되므로 "처리 시간 > 락 TTL"에도 uniqueness가 유지된다(asynq의 결함 개선). TTL은 프로세스가 최종 상태 도달 전에 죽는 경우의 고아 안전망일 뿐이다.
+**Architecture:** 지연 태스크는 stream이 아니라 scheduled ZSET(score = process_at)에 넣고, forwarder가 retry ZSET과 동일하게 due된 것을 stream으로 승격한다(M2 `forwardCmd` 재사용). unique 락은 enqueue/schedule 시 `SET NX PX`로 원자 획득하고(중복이면 `ErrDuplicateTask`), **태스크가 최종 상태(완료/보관/폐기)에 도달할 때 해제**한다 — 대기·재시도·처리 전 구간에서 유지된다. 단, **M3는 처리 중 TTL을 갱신하지 않는다**(heartbeat 연동은 후속 마일스톤). 따라서 TTL은 "고아 안전망 + 실질적 상한"을 겸하며, **TTL을 태스크의 예상 총 생애(처리 + 재시도 + 백오프 대기)보다 넉넉히 잡아야** uniqueness가 생애 전체를 덮는다. "TTL과 무관한 완전한 생애 uniqueness"는 heartbeat 마일스톤에서 완성된다(asynq 대비 이 부분은 아직 동등).
 
 **Tech Stack:** Go 1.26, `github.com/redis/go-redis/v9`, `crypto/sha256`(unique 키 해시), 표준 `testing` + 실제 Redis 하니스.
 
@@ -1237,7 +1237,7 @@ git commit -m "test: unique 락 생애(처리>TTL) + 지연 실행 통합 테스
 - [ ] `make check` 전부 통과 (실 Redis 연결 시)
 - [ ] `WithProcessIn`/`WithProcessAt` → scheduled ZSET → forwarder가 due 시 스트림 승격 → 지연 후 실행
 - [ ] `WithUnique(ttl)` → 동일 (kind+payload) 중복 enqueue는 `ErrDuplicateTask`
-- [ ] unique 락이 **처리 시간 > TTL**에도 유지됨(생애 전체), 최종 상태(완료/보관/폐기)에서 해제
+- [ ] unique 락이 대기·재시도·처리 전 구간(TTL 이내) 유지되고, 최종 상태(완료/보관/폐기)에서 해제됨. (TTL 갱신은 heartbeat 마일스톤 — TTL은 넉넉히 설정해야 함)
 - [ ] 재시도 중에는 락 유지, Archive/Done/discard에서 해제
 - [ ] 지연 태스크가 정확히 1회 실행(forwarder 멱등)
 

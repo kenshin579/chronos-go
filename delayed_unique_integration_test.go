@@ -33,7 +33,7 @@ func mustPayload(t *testing.T, args slowArgs) []byte {
 // set comfortably larger than the processing window: M3 has no heartbeat-based
 // TTL renewal (deferred to a later milestone), so a task that outran its TTL
 // could otherwise let a duplicate slip in.
-func TestIntegration_UniqueLockSpansProcessingBeyondTTL(t *testing.T) {
+func TestIntegration_UniqueLockHeldThroughProcessingUntilCompletion(t *testing.T) {
 	client := testutil.NewRedis(t)
 	c := NewClient(client)
 	defer c.Close()
