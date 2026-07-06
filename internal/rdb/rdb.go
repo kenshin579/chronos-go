@@ -142,13 +142,33 @@ func (r *RDB) Dequeue(ctx context.Context, consumer string, block time.Duration,
 	return msg, entry.ID, nil
 }
 
-// Done acknowledges a successfully processed task: it acks the stream entry
-// (removing it from the PEL) and deletes the task body. In M1 there is no
-// completed-retention; later milestones may keep the body in a completed ZSET.
-func (r *RDB) Done(ctx context.Context, qname, streamID, taskID string) error {
+// releaseUniqueCmd deletes the unique lock only if it still points at this task
+// (so a lock re-acquired by a later task is not clobbered).
+// KEYS[1] unique key. ARGV[1] taskID.
+var releaseUniqueCmd = redis.NewScript(`
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  redis.call("DEL", KEYS[1])
+end
+return 1
+`)
+
+// Done acknowledges a successfully processed task: it acks the stream entry,
+// deletes the task body, and releases the task's unique lock (if any). It takes
+// the full message so it can find the unique key.
+func (r *RDB) Done(ctx context.Context, qname, streamID string, msg *base.TaskMessage) error {
 	pipe := r.client.TxPipeline()
 	pipe.XAck(ctx, base.StreamKey(qname), ConsumerGroup, streamID)
-	pipe.Del(ctx, base.TaskKey(qname, taskID))
-	_, err := pipe.Exec(ctx)
-	return err
+	pipe.Del(ctx, base.TaskKey(qname, msg.ID))
+	if _, err := pipe.Exec(ctx); err != nil {
+		return err
+	}
+	return r.releaseUnique(ctx, msg)
+}
+
+// releaseUnique releases the task's unique lock if it holds one.
+func (r *RDB) releaseUnique(ctx context.Context, msg *base.TaskMessage) error {
+	if msg.UniqueKey == "" {
+		return nil
+	}
+	return releaseUniqueCmd.Run(ctx, r.client, []string{msg.UniqueKey}, msg.ID).Err()
 }

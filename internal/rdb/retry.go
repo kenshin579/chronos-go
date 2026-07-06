@@ -29,9 +29,13 @@ func (r *RDB) Retry(ctx context.Context, qname, streamID string, msg *base.TaskM
 }
 
 // Archive acks the active stream entry and moves the task to the archived ZSET
-// (dead-letter) with score = diedAt.
+// (dead-letter) with score = diedAt. Archiving is terminal, so the task's
+// unique lock (if any) is released.
 func (r *RDB) Archive(ctx context.Context, qname, streamID string, msg *base.TaskMessage, diedAt time.Time) error {
-	return r.moveToZSet(ctx, qname, streamID, msg, base.ArchivedKey(qname), base.StateArchived, diedAt.Unix())
+	if err := r.moveToZSet(ctx, qname, streamID, msg, base.ArchivedKey(qname), base.StateArchived, diedAt.Unix()); err != nil {
+		return err
+	}
+	return r.releaseUnique(ctx, msg)
 }
 
 func (r *RDB) moveToZSet(ctx context.Context, qname, streamID string, msg *base.TaskMessage, zsetKey string, state base.TaskState, score int64) error {

@@ -35,3 +35,12 @@ func TestRetryAndArchivedAndTaskPrefixKeys(t *testing.T) {
 		t.Error("TaskKeyPrefix + id must equal TaskKey")
 	}
 }
+
+func TestScheduledAndUniqueKeys(t *testing.T) {
+	if got := ScheduledKey("default"); got != "chronos:{default}:scheduled" {
+		t.Errorf("ScheduledKey = %q", got)
+	}
+	if got := UniqueKey("default", "email:send:abc"); got != "chronos:{default}:unique:email:send:abc" {
+		t.Errorf("UniqueKey = %q", got)
+	}
+}

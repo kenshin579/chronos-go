@@ -30,3 +30,7 @@ vendor/
 
 # OS
 .DS_Store
+
+# Redis persistence artifacts (created by a local test redis-server)
+dump.rdb
+*.rdb

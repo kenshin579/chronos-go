@@ -111,12 +111,12 @@ func TestDone_AcksAndDeletesTask(t *testing.T) {
 	if err := r.Enqueue(ctx, msg); err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
-	_, streamID, err := r.Dequeue(ctx, "consumer-1", 0, "default")
+	got, streamID, err := r.Dequeue(ctx, "consumer-1", 0, "default")
 	if err != nil {
 		t.Fatalf("dequeue: %v", err)
 	}
 
-	if err := r.Done(ctx, "default", streamID, "task-1"); err != nil {
+	if err := r.Done(ctx, "default", streamID, got); err != nil {
 		t.Fatalf("done: %v", err)
 	}
 

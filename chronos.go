@@ -3,6 +3,7 @@ package chronos
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -16,6 +17,10 @@ const DefaultQueue = "default"
 
 // DefaultMaxRetry is the retry budget used when WithMaxRetry is not given.
 const DefaultMaxRetry = 25
+
+// ErrDuplicateTask is returned by Enqueue when WithUnique is used and an
+// identical task already holds the unique lock.
+var ErrDuplicateTask = rdb.ErrDuplicateTask
 
 // TaskArgs is implemented by every task payload type. Kind returns a stable
 // identifier used to route the task to its handler; it MUST be defined on a
@@ -65,6 +70,8 @@ type enqueueOptions struct {
 	taskID    string
 	maxRetry  int
 	noArchive bool
+	processAt time.Time     // zero = immediate
+	uniqueTTL time.Duration // > 0 enables unique deduplication
 }
 
 // Option customizes a single Enqueue call.
@@ -106,6 +113,36 @@ func WithDeadLetterDiscard() Option {
 	return optionFunc(func(o *enqueueOptions) { o.noArchive = true })
 }
 
+// WithProcessAt schedules the task to first become available at t. A non-future
+// time enqueues immediately.
+func WithProcessAt(t time.Time) Option {
+	return optionFunc(func(o *enqueueOptions) { o.processAt = t })
+}
+
+// WithProcessIn schedules the task to first become available after d. A
+// non-positive d enqueues immediately.
+func WithProcessIn(d time.Duration) Option {
+	return optionFunc(func(o *enqueueOptions) { o.processAt = time.Now().Add(d) })
+}
+
+// WithUnique deduplicates tasks by (kind + payload): while a matching task is
+// anywhere in the pipeline (pending, retrying, scheduled), enqueueing another
+// returns ErrDuplicateTask. The lock is released when the task reaches a
+// terminal state (completed / archived / discarded).
+//
+// ttl is the lock's expiry. Because the current milestone does not renew the
+// TTL during processing, ttl also acts as a practical upper bound: set it
+// comfortably above the task's expected total lifetime (processing + retries +
+// backoff). For a delayed task, the lock TTL is automatically extended to cover
+// the delay, so ttl only needs to cover the post-availability lifetime.
+func WithUnique(ttl time.Duration) Option {
+	return optionFunc(func(o *enqueueOptions) {
+		if ttl > 0 {
+			o.uniqueTTL = ttl
+		}
+	})
+}
+
 // Enqueue serializes args and makes the task available for immediate
 // processing. It is a package-level function rather than a method because Go
 // methods cannot have type parameters.
@@ -133,8 +170,28 @@ func Enqueue[T TaskArgs](ctx context.Context, c *Client, args T, opts ...Option)
 		MaxRetry:  options.maxRetry,
 		NoArchive: options.noArchive,
 	}
-	if err := c.rdb.Enqueue(ctx, msg); err != nil {
-		return nil, err
+	scheduled := !options.processAt.IsZero() && options.processAt.After(time.Now())
+	unique := options.uniqueTTL > 0
+	if unique {
+		msg.UniqueKey = base.UniqueKey(options.queue, base.UniqueSuffix(msg.Kind, payload))
+	}
+
+	var err2 error
+	switch {
+	case unique && scheduled:
+		// The lock must outlive the delay, or it would expire before the task is
+		// even promoted, silently breaking dedup. Extend it to cover the delay
+		// plus the caller's ttl (the post-availability safety window).
+		err2 = c.rdb.ScheduleUnique(ctx, msg, options.processAt, options.uniqueTTL+time.Until(options.processAt))
+	case unique:
+		err2 = c.rdb.EnqueueUnique(ctx, msg, options.uniqueTTL)
+	case scheduled:
+		err2 = c.rdb.Schedule(ctx, msg, options.processAt)
+	default:
+		err2 = c.rdb.Enqueue(ctx, msg)
+	}
+	if err2 != nil {
+		return nil, err2
 	}
 
 	return &TaskInfo{ID: id, Kind: msg.Kind, Queue: msg.Queue}, nil

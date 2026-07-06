@@ -44,3 +44,15 @@ func RetryKey(qname string) string {
 func ArchivedKey(qname string) string {
 	return QueueKeyPrefix(qname) + "archived"
 }
+
+// ScheduledKey returns the ZSET key holding delayed tasks (score = process_at).
+func ScheduledKey(qname string) string {
+	return QueueKeyPrefix(qname) + "scheduled"
+}
+
+// UniqueKey returns the STRING key holding the deduplication lock for a task.
+// suffix is produced by UniqueSuffix. The queue hash tag keeps it in the same
+// slot as the task's other keys.
+func UniqueKey(qname, suffix string) string {
+	return QueueKeyPrefix(qname) + "unique:" + suffix
+}

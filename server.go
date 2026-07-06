@@ -246,7 +246,7 @@ func (s *Server) process(ctx context.Context, qname, streamID string, msg *base.
 	defer cancel()
 
 	if err == nil {
-		if derr := s.rdb.Done(opCtx, qname, streamID, msg.ID); derr != nil {
+		if derr := s.rdb.Done(opCtx, qname, streamID, msg); derr != nil {
 			s.logger.Error("chronos: ack failed", "id", msg.ID, "error", derr)
 		}
 		return
@@ -285,7 +285,7 @@ func (s *Server) dispatchSafely(ctx context.Context, msg *base.TaskMessage) (err
 // the OnDeadLetter hook.
 func (s *Server) deadLetter(ctx context.Context, qname, streamID string, msg *base.TaskMessage, cause error) {
 	if msg.NoArchive {
-		if derr := s.rdb.Done(ctx, qname, streamID, msg.ID); derr != nil {
+		if derr := s.rdb.Done(ctx, qname, streamID, msg); derr != nil {
 			s.logger.Error("chronos: discard failed", "id", msg.ID, "error", derr)
 		}
 	} else if aerr := s.rdb.Archive(ctx, qname, streamID, msg, time.Now()); aerr != nil {
@@ -313,7 +313,13 @@ func (s *Server) forwarderLoop(ctx context.Context) {
 					if ctx.Err() != nil {
 						return
 					}
-					s.logger.Error("chronos: forward failed", "queue", q, "error", err)
+					s.logger.Error("chronos: forward retry failed", "queue", q, "error", err)
+				}
+				if _, err := s.rdb.ForwardScheduled(ctx, q, time.Now(), forwardBatchSize); err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					s.logger.Error("chronos: forward scheduled failed", "queue", q, "error", err)
 				}
 			}
 		}

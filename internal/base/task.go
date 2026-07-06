@@ -50,6 +50,10 @@ type TaskMessage struct {
 	// NoArchive, when true, discards the task on retry exhaustion instead of
 	// storing it in the archived ZSET (the OnDeadLetter hook still fires).
 	NoArchive bool `json:"no_archive"`
+	// UniqueKey is the full Redis key of this task's deduplication lock, or ""
+	// if the task is not unique. It is released when the task reaches a terminal
+	// state (completed / archived / discarded).
+	UniqueKey string `json:"unique_key"`
 }
 
 // EncodeMessage serializes a TaskMessage for storage in Redis.
