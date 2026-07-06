@@ -3,6 +3,8 @@ package rdb
 import (
 	"context"
 
+	"github.com/redis/go-redis/v9"
+
 	"github.com/kenshin579/chronos-go/internal/base"
 )
 
@@ -60,4 +62,79 @@ func (r *RDB) QueueStats(ctx context.Context, qname string) (*QueueStats, error)
 // Queues returns the names of all known queues.
 func (r *RDB) Queues(ctx context.Context) ([]string, error) {
 	return r.client.SMembers(ctx, base.QueuesKey()).Result()
+}
+
+// ListZSetTasks returns up to limit task messages referenced by a state ZSET
+// (scheduled / retry / archived), ordered by score (soonest / oldest first).
+func (r *RDB) ListZSetTasks(ctx context.Context, qname, zsetKey string, limit int) ([]*base.TaskMessage, error) {
+	ids, err := r.client.ZRange(ctx, zsetKey, 0, int64(limit-1)).Result()
+	if err != nil {
+		return nil, err
+	}
+	tasks := make([]*base.TaskMessage, 0, len(ids))
+	for _, id := range ids {
+		msg, err := r.GetTask(ctx, qname, id)
+		if err == redis.Nil {
+			continue // body gone; skip
+		}
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, msg)
+	}
+	return tasks, nil
+}
+
+// GetTask reads a single task's message by ID. Returns redis.Nil if absent.
+func (r *RDB) GetTask(ctx context.Context, qname, taskID string) (*base.TaskMessage, error) {
+	raw, err := r.client.HGet(ctx, base.TaskKey(qname, taskID), "msg").Result()
+	if err != nil {
+		return nil, err
+	}
+	return base.DecodeMessage([]byte(raw))
+}
+
+// runTaskCmd moves a task from whichever state ZSET holds it into the stream for
+// immediate processing.
+// KEYS[1] scheduled, KEYS[2] retry, KEYS[3] archived, KEYS[4] stream, KEYS[5] task hash.
+// ARGV[1] taskID, ARGV[2] pending state.
+var runTaskCmd = redis.NewScript(`
+local removed = redis.call("ZREM", KEYS[1], ARGV[1]) + redis.call("ZREM", KEYS[2], ARGV[1]) + redis.call("ZREM", KEYS[3], ARGV[1])
+if redis.call("EXISTS", KEYS[5]) == 0 then
+  return 0
+end
+redis.call("XADD", KEYS[4], "*", "task_id", ARGV[1])
+redis.call("HSET", KEYS[5], "state", ARGV[2])
+return 1
+`)
+
+// RunTask promotes a scheduled/retry/archived task to the stream so it runs now.
+func (r *RDB) RunTask(ctx context.Context, qname, taskID string) error {
+	keys := []string{
+		base.ScheduledKey(qname), base.RetryKey(qname), base.ArchivedKey(qname),
+		base.StreamKey(qname), base.TaskKey(qname, taskID),
+	}
+	return runTaskCmd.Run(ctx, r.client, keys, taskID, int(base.StatePending)).Err()
+}
+
+// DeleteTask removes a task from all state ZSETs and deletes its body, releasing
+// any unique lock it holds. (It does not remove an in-flight stream/PEL entry;
+// use it for scheduled/retry/archived tasks.)
+func (r *RDB) DeleteTask(ctx context.Context, qname, taskID string) error {
+	msg, err := r.GetTask(ctx, qname, taskID)
+	if err != nil && err != redis.Nil {
+		return err
+	}
+	pipe := r.client.TxPipeline()
+	pipe.ZRem(ctx, base.ScheduledKey(qname), taskID)
+	pipe.ZRem(ctx, base.RetryKey(qname), taskID)
+	pipe.ZRem(ctx, base.ArchivedKey(qname), taskID)
+	pipe.Del(ctx, base.TaskKey(qname, taskID))
+	if _, err := pipe.Exec(ctx); err != nil {
+		return err
+	}
+	if msg != nil {
+		return r.releaseUnique(ctx, msg)
+	}
+	return nil
 }
