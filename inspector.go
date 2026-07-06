@@ -39,11 +39,6 @@ func (i *Inspector) Queues(ctx context.Context) ([]*QueueInfo, error) {
 	}
 	infos := make([]*QueueInfo, 0, len(names))
 	for _, name := range names {
-		// A scheduled-only queue may not have a consumer group yet; QueueStats
-		// reads the PEL via XPending, which errors with NOGROUP otherwise.
-		if err := i.rdb.EnsureGroup(ctx, name); err != nil {
-			return nil, err
-		}
 		st, err := i.rdb.QueueStats(ctx, name)
 		if err != nil {
 			return nil, err

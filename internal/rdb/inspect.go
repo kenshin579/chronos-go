@@ -2,6 +2,7 @@ package rdb
 
 import (
 	"context"
+	"strings"
 
 	"github.com/redis/go-redis/v9"
 
@@ -26,11 +27,19 @@ func (r *RDB) QueueStats(ctx context.Context, qname string) (*QueueStats, error)
 	if err != nil {
 		return nil, err
 	}
+	// A queue that has only ever held scheduled tasks has no consumer group yet
+	// (the group is created lazily on the first Dequeue/Server start). Treat that
+	// as zero active so read-only inspection never has to create the group.
+	var active int64
 	pending, err := r.client.XPending(ctx, streamKey, ConsumerGroup).Result()
-	if err != nil {
+	switch {
+	case err == nil:
+		active = pending.Count // entries currently in the PEL
+	case strings.HasPrefix(err.Error(), "NOGROUP"):
+		active = 0
+	default:
 		return nil, err
 	}
-	active := pending.Count // entries currently in the PEL
 
 	scheduled, err := r.client.ZCard(ctx, base.ScheduledKey(qname)).Result()
 	if err != nil {
