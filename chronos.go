@@ -125,11 +125,16 @@ func WithProcessIn(d time.Duration) Option {
 	return optionFunc(func(o *enqueueOptions) { o.processAt = time.Now().Add(d) })
 }
 
-// WithUnique deduplicates tasks by (kind + payload) for the lifetime of the
-// task: while a matching task is anywhere in the pipeline (pending, retrying,
-// scheduled), enqueueing another returns ErrDuplicateTask. ttl is an
-// orphan-safety expiry used if the owning process dies before the task reaches
-// a terminal state; it does not cap how long the lock is genuinely held.
+// WithUnique deduplicates tasks by (kind + payload): while a matching task is
+// anywhere in the pipeline (pending, retrying, scheduled), enqueueing another
+// returns ErrDuplicateTask. The lock is released when the task reaches a
+// terminal state (completed / archived / discarded).
+//
+// ttl is the lock's expiry. Because the current milestone does not renew the
+// TTL during processing, ttl also acts as a practical upper bound: set it
+// comfortably above the task's expected total lifetime (processing + retries +
+// backoff). For a delayed task, the lock TTL is automatically extended to cover
+// the delay, so ttl only needs to cover the post-availability lifetime.
 func WithUnique(ttl time.Duration) Option {
 	return optionFunc(func(o *enqueueOptions) {
 		if ttl > 0 {
@@ -174,7 +179,10 @@ func Enqueue[T TaskArgs](ctx context.Context, c *Client, args T, opts ...Option)
 	var err2 error
 	switch {
 	case unique && scheduled:
-		err2 = c.rdb.ScheduleUnique(ctx, msg, options.processAt, options.uniqueTTL)
+		// The lock must outlive the delay, or it would expire before the task is
+		// even promoted, silently breaking dedup. Extend it to cover the delay
+		// plus the caller's ttl (the post-availability safety window).
+		err2 = c.rdb.ScheduleUnique(ctx, msg, options.processAt, options.uniqueTTL+time.Until(options.processAt))
 	case unique:
 		err2 = c.rdb.EnqueueUnique(ctx, msg, options.uniqueTTL)
 	case scheduled:

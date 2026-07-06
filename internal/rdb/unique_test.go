@@ -125,3 +125,42 @@ func TestRetry_KeepsUniqueLock_ArchiveReleases(t *testing.T) {
 		t.Error("unique lock should be released after Archive")
 	}
 }
+
+// The unique lock must only be released by the task that currently holds it: if
+// another task has since re-acquired the same key, a stale Done/Archive from the
+// original task must not delete the new owner's lock. This guards the recoverer
+// race where a slow task is reclaimed and a duplicate re-locks the key.
+func TestReleaseUnique_DoesNotClobberOtherTasksLock(t *testing.T) {
+	client := testutil.NewRedis(t)
+	r := NewRDB(client)
+	ctx := context.Background()
+
+	msg := uniqueMsg("t1", "default")
+	// The lock is currently held by a different task (t2).
+	if err := client.Set(ctx, msg.UniqueKey, "t2", time.Minute).Err(); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+
+	// t1 releasing must be a no-op because it does not own the lock.
+	if err := r.releaseUnique(ctx, msg); err != nil {
+		t.Fatalf("releaseUnique: %v", err)
+	}
+
+	val, err := client.Get(ctx, msg.UniqueKey).Result()
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if val != "t2" {
+		t.Errorf("lock value = %q, want t2 (t1 must not clobber t2's lock)", val)
+	}
+}
+
+func TestReleaseUnique_NoUniqueKeyIsNoOp(t *testing.T) {
+	client := testutil.NewRedis(t)
+	r := NewRDB(client)
+	// A task with no UniqueKey must not error and must touch nothing.
+	msg := &base.TaskMessage{ID: "t1", Kind: "k", Payload: []byte("{}"), Queue: "default"}
+	if err := r.releaseUnique(context.Background(), msg); err != nil {
+		t.Fatalf("releaseUnique no-op: %v", err)
+	}
+}

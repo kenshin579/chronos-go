@@ -135,3 +135,30 @@ func TestIntegration_DelayedTaskExecutesOnce(t *testing.T) {
 		t.Errorf("runs = %d, want 1", got)
 	}
 }
+
+// A delayed unique task must stay deduplicated until it is promoted and run,
+// even when the caller's unique TTL is shorter than the delay: the lock TTL is
+// extended to cover the delay. Regression test for the "lock expires before
+// promotion" gap.
+func TestIntegration_DelayedUniqueLockSurvivesUntilPromotion(t *testing.T) {
+	client := testutil.NewRedis(t)
+	c := NewClient(client)
+	defer c.Close()
+	ctx := context.Background()
+
+	// Delay (1s) is longer than the caller's unique TTL (200ms). Without the
+	// TTL extension the lock would expire at 200ms and the duplicate would slip in.
+	if _, err := Enqueue(ctx, c, slowArgs{ID: 42},
+		WithProcessIn(1*time.Second), WithUnique(200*time.Millisecond)); err != nil {
+		t.Fatalf("first enqueue: %v", err)
+	}
+
+	// Wait past the naive TTL but before the delay elapses.
+	time.Sleep(500 * time.Millisecond)
+
+	// The duplicate must still be rejected.
+	if _, err := Enqueue(ctx, c, slowArgs{ID: 42},
+		WithProcessIn(1*time.Second), WithUnique(200*time.Millisecond)); !errors.Is(err, ErrDuplicateTask) {
+		t.Fatalf("duplicate during delay err = %v, want ErrDuplicateTask", err)
+	}
+}
