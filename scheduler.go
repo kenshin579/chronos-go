@@ -2,6 +2,7 @@ package chronos
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -38,7 +39,6 @@ type scheduleEntry struct {
 	noArch   bool
 	misfire  MisfirePolicy
 	schedule cronSchedule
-	next     time.Time // in-memory next trigger (leader only)
 }
 
 // Scheduler registers periodic jobs and, on whichever instance is elected
@@ -82,13 +82,21 @@ func (s *Scheduler) register(spec string, sched cronSchedule, kind string, paylo
 	for _, opt := range opts {
 		opt.apply(&o)
 	}
+	// The schedule ID must disambiguate jobs that share a kind and spec but differ
+	// by queue or payload — otherwise their dedup keys, task keys, and lastFired
+	// keys collide and all but one job would be silently dropped.
+	sum := sha256.Sum256(append([]byte(o.queue+"\x00"), payload...))
+	id := fmt.Sprintf("%s:%s#%x", kind, spec, sum[:8])
 	s.entries = append(s.entries, &scheduleEntry{
-		id: kind + ":" + spec, kind: kind, payload: payload, queue: o.queue,
+		id: id, kind: kind, payload: payload, queue: o.queue,
 		maxRetry: o.maxRetry, noArch: o.noArchive, misfire: o.misfire, schedule: sched,
 	})
 }
 
-// RegisterInterval registers args to be enqueued every interval (>= 1s).
+// RegisterInterval registers args to be enqueued every interval (>= 1s). Any
+// sub-second component is truncated to whole seconds (e.g. 1500ms behaves as 1s).
+// Register all schedules before calling Start (registration is not concurrency-
+// safe with the running tick loop).
 func RegisterInterval[T TaskArgs](s *Scheduler, interval time.Duration, args T, opts ...Option) error {
 	if interval < time.Second {
 		return errors.New("chronos: interval must be >= 1s (sub-second schedules cannot survive leader failover)")
@@ -118,7 +126,13 @@ func RegisterCron[T TaskArgs](s *Scheduler, spec string, args T, opts ...Option)
 }
 
 // Start launches leader election and the tick loop. Safe to call on every
-// instance; only the leader enqueues.
+// instance; only the leader enqueues. Register all schedules before Start.
+//
+// For correct cross-instance behavior, every instance must register the same
+// schedules with the same SchedulerConfig.Location and have reasonably
+// synchronized clocks: the deterministic dedup key is derived from the computed
+// trigger instant, so divergent timezones or badly skewed clocks could let two
+// instances treat the same logical trigger as different ones.
 func (s *Scheduler) Start(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
@@ -159,9 +173,13 @@ func (s *Scheduler) run(ctx context.Context) {
 	}
 }
 
-// tryElect acquires or renews leadership and, on a transition to leader,
-// initializes each entry's next-trigger baseline from persisted lastFired.
+// tryElect acquires or renews leadership. It is a no-op once the scheduler is
+// shutting down, so it cannot re-acquire the lock this instance just resigned
+// (which would strand leadership on a dying instance until TTL expiry).
 func (s *Scheduler) tryElect(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
+	}
 	ok, err := s.rdb.AcquireOrRenewLeadership(ctx, s.instance, s.cfg.LeaderTTL)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -182,12 +200,24 @@ func (s *Scheduler) fireDue(ctx context.Context) {
 	for _, e := range s.entries {
 		last := s.lastFiredOrInit(ctx, e, now)
 		fires, newLast := computeFires(e.schedule, last, now, e.misfire)
+
+		// If a real (non-duplicate) enqueue error occurs, do NOT advance
+		// lastFired: leaving it put lets the next tick retry the trigger instead
+		// of silently losing it. A duplicate means it was already enqueued
+		// (by this or another leader), so advancing past it is correct.
+		failed := false
 		for _, trigger := range fires {
-			if err := s.enqueueTrigger(ctx, e, trigger); err != nil {
-				if !errors.Is(err, rdb.ErrDuplicateTask) && ctx.Err() == nil {
-					s.logger.Error("chronos: schedule enqueue failed", "schedule", e.id, "error", err)
-				}
+			err := s.enqueueTrigger(ctx, e, trigger)
+			if err == nil || errors.Is(err, rdb.ErrDuplicateTask) {
+				continue
 			}
+			failed = true
+			if ctx.Err() == nil {
+				s.logger.Error("chronos: schedule enqueue failed", "schedule", e.id, "error", err)
+			}
+		}
+		if failed {
+			continue
 		}
 		if !newLast.Equal(last) {
 			if err := s.rdb.SetLastFired(ctx, e.id, newLast); err != nil && ctx.Err() == nil {

@@ -85,3 +85,29 @@ func TestScheduler_SingleExecutionAcrossInstances(t *testing.T) {
 		t.Errorf("runs = %d, want ~3 (2 schedulers must not double-enqueue)", got)
 	}
 }
+
+type reportArgs struct {
+	Team string `json:"team"`
+}
+
+func (reportArgs) Kind() string { return "sched:report" }
+
+// Two jobs with the same kind and spec but different payloads must get distinct
+// schedule IDs; otherwise their dedup/task/lastFired keys collide and one would
+// be silently dropped.
+func TestRegister_DistinctIDsForDifferentPayloads(t *testing.T) {
+	client := testutil.NewRedis(t)
+	s := NewScheduler(client, SchedulerConfig{})
+	if err := RegisterInterval(s, time.Minute, reportArgs{Team: "A"}); err != nil {
+		t.Fatalf("register A: %v", err)
+	}
+	if err := RegisterInterval(s, time.Minute, reportArgs{Team: "B"}); err != nil {
+		t.Fatalf("register B: %v", err)
+	}
+	if len(s.entries) != 2 {
+		t.Fatalf("entries = %d, want 2", len(s.entries))
+	}
+	if s.entries[0].id == s.entries[1].id {
+		t.Errorf("same-kind+spec jobs with different payloads share id %q (would collide)", s.entries[0].id)
+	}
+}

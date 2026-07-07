@@ -36,9 +36,13 @@ func computeFires(s cronSchedule, lastFired, now time.Time, policy MisfirePolicy
 		return nil, lastFired // nothing due yet
 	}
 
-	// Find the latest trigger that is <= now.
+	// Find the latest trigger that is <= now. The scan is bounded so a very large
+	// gap (e.g. a schedule down for a long time) cannot block the caller's loop
+	// for an unbounded number of iterations; if the cap is hit, this tick
+	// fast-forwards partway and the next tick continues.
+	const maxScan = 100_000
 	latest := next
-	for {
+	for i := 0; i < maxScan; i++ {
 		n := s.Next(latest)
 		if n.After(now) {
 			break
