@@ -116,6 +116,21 @@ go run ./cmd/chronos --db 15 task rm  default <task-id>    # 삭제
 
 ---
 
+## 2c. 스케줄러 리더 관찰
+
+분산 스케줄러는 리더로 선출된 인스턴스만 잡을 enqueue한다. 현재 리더와 스케줄 상태:
+
+```bash
+redis-cli -n 15 GET chronos:leader              # 현재 리더 인스턴스 ID
+redis-cli -n 15 KEYS 'chronos:sched:*:last'     # 스케줄별 마지막 실행 시각
+redis-cli -n 15 KEYS 'chronos:{default}:pdedup:*'  # 트리거별 결정적 dedup 키
+```
+
+리더가 graceful shutdown하면 `chronos:leader`가 사라지고 `chronos:leader:resign`
+채널로 통지되어, 다른 인스턴스가 즉시 재선출된다.
+
+---
+
 ## 3. 자동화된 검증 (테스트)
 
 관찰과 별개로, 회귀 방지는 테스트가 담당한다. 카노니컬 명령:
