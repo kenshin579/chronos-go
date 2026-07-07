@@ -25,9 +25,11 @@ func main() {
 	flag.Parse()
 
 	client := redis.NewClient(&redis.Options{Addr: *addr, DB: *db})
-	defer client.Close()
 
-	os.Exit(run(flag.Args(), client, os.Stdout))
+	// Not deferred: os.Exit skips deferred calls, so close explicitly first.
+	code := run(flag.Args(), client, os.Stdout)
+	_ = client.Close()
+	os.Exit(code)
 }
 
 func envOr(key, def string) string {

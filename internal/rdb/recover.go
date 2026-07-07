@@ -48,8 +48,12 @@ func (r *RDB) Recover(ctx context.Context, qname, consumer string, minIdle time.
 
 		raw, err := r.client.HGet(ctx, base.TaskKey(qname, taskID), "msg").Result()
 		if err == redis.Nil {
-			// Body already gone: just drop the orphan PEL entry.
-			_ = r.client.XAck(ctx, streamKey, ConsumerGroup, m.ID).Err()
+			// Body already gone: drop the orphan entry (ack + delete) so it does
+			// not linger in the stream and inflate the pending count.
+			pipe := r.client.TxPipeline()
+			pipe.XAck(ctx, streamKey, ConsumerGroup, m.ID)
+			pipe.XDel(ctx, streamKey, m.ID)
+			_, _ = pipe.Exec(ctx)
 			continue
 		}
 		if err != nil {

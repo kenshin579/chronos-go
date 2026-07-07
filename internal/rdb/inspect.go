@@ -76,6 +76,9 @@ func (r *RDB) Queues(ctx context.Context) ([]string, error) {
 // ListZSetTasks returns up to limit task messages referenced by a state ZSET
 // (scheduled / retry / archived), ordered by score (soonest / oldest first).
 func (r *RDB) ListZSetTasks(ctx context.Context, qname, zsetKey string, limit int) ([]*base.TaskMessage, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
 	ids, err := r.client.ZRange(ctx, zsetKey, 0, int64(limit-1)).Result()
 	if err != nil {
 		return nil, err
@@ -104,11 +107,18 @@ func (r *RDB) GetTask(ctx context.Context, qname, taskID string) (*base.TaskMess
 }
 
 // runTaskCmd moves a task from whichever state ZSET holds it into the stream for
-// immediate processing.
+// immediate processing. It only promotes a task that was actually removed from a
+// state ZSET (scheduled/retry/archived): if the task is not in any of them (e.g.
+// it is already pending or in-flight/active), it does nothing. This prevents a
+// duplicate stream entry (double execution) and makes concurrent RunTask calls
+// safe — only the one that wins the ZREM promotes.
 // KEYS[1] scheduled, KEYS[2] retry, KEYS[3] archived, KEYS[4] stream, KEYS[5] task hash.
 // ARGV[1] taskID, ARGV[2] pending state.
 var runTaskCmd = redis.NewScript(`
 local removed = redis.call("ZREM", KEYS[1], ARGV[1]) + redis.call("ZREM", KEYS[2], ARGV[1]) + redis.call("ZREM", KEYS[3], ARGV[1])
+if removed == 0 then
+  return 0
+end
 if redis.call("EXISTS", KEYS[5]) == 0 then
   return 0
 end
@@ -127,8 +137,10 @@ func (r *RDB) RunTask(ctx context.Context, qname, taskID string) error {
 }
 
 // DeleteTask removes a task from all state ZSETs and deletes its body, releasing
-// any unique lock it holds. (It does not remove an in-flight stream/PEL entry;
-// use it for scheduled/retry/archived tasks.)
+// any unique lock it holds. It is intended for scheduled/retry/archived tasks.
+// If called on an in-flight (pending/active) task, deleting the body leaves an
+// orphan stream/PEL entry; that orphan is harmless and is trimmed (XACK+XDEL) by
+// the next dequeue or recover pass.
 func (r *RDB) DeleteTask(ctx context.Context, qname, taskID string) error {
 	msg, err := r.GetTask(ctx, qname, taskID)
 	if err != nil && err != redis.Nil {

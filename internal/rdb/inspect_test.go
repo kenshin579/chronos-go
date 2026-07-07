@@ -110,3 +110,33 @@ func TestDeleteTask_RemovesEverywhere(t *testing.T) {
 		t.Error("task hash should be deleted")
 	}
 }
+
+// RunTask on a task that is not in any state ZSET (e.g. in-flight/active) must be
+// a no-op: it must not add a duplicate stream entry (which would double-execute).
+func TestRunTask_ActiveTaskIsNoOp(t *testing.T) {
+	client := testutil.NewRedis(t)
+	r := NewRDB(client)
+	ctx := context.Background()
+	if err := r.EnsureGroup(ctx, "default"); err != nil {
+		t.Fatalf("ensure group: %v", err)
+	}
+
+	// Enqueue + dequeue → task is active (in PEL), not in any ZSET. Its hash exists.
+	if err := r.Enqueue(ctx, &base.TaskMessage{ID: "t1", Kind: "k", Payload: []byte("{}"), Queue: "default"}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if _, _, err := r.Dequeue(ctx, "c1", 0, "default"); err != nil {
+		t.Fatalf("dequeue: %v", err)
+	}
+	// Stream currently holds exactly the one delivered (active) entry.
+	before, _ := client.XLen(ctx, base.StreamKey("default")).Result()
+
+	if err := r.RunTask(ctx, "default", "t1"); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	after, _ := client.XLen(ctx, base.StreamKey("default")).Result()
+	if after != before {
+		t.Errorf("stream len changed %d→%d; RunTask on an active task must not add a duplicate", before, after)
+	}
+}
