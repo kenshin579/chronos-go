@@ -44,3 +44,18 @@ func TestScheduledAndUniqueKeys(t *testing.T) {
 		t.Errorf("UniqueKey = %q", got)
 	}
 }
+
+func TestLeaderAndPeriodicKeys(t *testing.T) {
+	if LeaderKey() != "chronos:leader" {
+		t.Errorf("LeaderKey = %q", LeaderKey())
+	}
+	if LeaderResignChannel() != "chronos:leader:resign" {
+		t.Errorf("LeaderResignChannel = %q", LeaderResignChannel())
+	}
+	if got := PeriodicDedupKey("default", "job:1:1700000000"); got != "chronos:{default}:pdedup:job:1:1700000000" {
+		t.Errorf("PeriodicDedupKey = %q", got)
+	}
+	if got := ScheduleLastFiredKey("job:1"); got != "chronos:sched:job:1:last" {
+		t.Errorf("ScheduleLastFiredKey = %q", got)
+	}
+}

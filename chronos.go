@@ -72,6 +72,7 @@ type enqueueOptions struct {
 	noArchive bool
 	processAt time.Time     // zero = immediate
 	uniqueTTL time.Duration // > 0 enables unique deduplication
+	misfire   MisfirePolicy // used by scheduler registrations only
 }
 
 // Option customizes a single Enqueue call.
@@ -141,6 +142,13 @@ func WithUnique(ttl time.Duration) Option {
 			o.uniqueTTL = ttl
 		}
 	})
+}
+
+// WithMisfirePolicy sets how a scheduled job handles missed triggers (after a
+// leader-election gap or downtime). Only meaningful for RegisterInterval /
+// RegisterCron; ignored by a plain Enqueue. Defaults to MisfireSkip.
+func WithMisfirePolicy(p MisfirePolicy) Option {
+	return optionFunc(func(o *enqueueOptions) { o.misfire = p })
 }
 
 // Enqueue serializes args and makes the task available for immediate

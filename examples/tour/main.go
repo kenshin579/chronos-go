@@ -175,6 +175,20 @@ func main() {
 	}
 	fmt.Println("   (같은 정보를 CLI로: go run ./cmd/chronos --db 15 queue ls)")
 
+	section("7) 분산 스케줄러 (M4): 리더만 enqueue — 여러 인스턴스에서 안전")
+	sched := chronos.NewScheduler(rdb, chronos.SchedulerConfig{LeaderTTL: time.Second})
+	if err := chronos.RegisterInterval(sched, 1*time.Second, GreetArgs{Name: "매초"}); err != nil {
+		fmt.Printf("register 실패: %v\n", err)
+	}
+	if err := sched.Start(ctx); err != nil {
+		fmt.Printf("scheduler start 실패: %v\n", err)
+	}
+	fmt.Println("   1초 간격 잡 등록 — 리더로 선출되어 몇 번 실행되는 것을 관찰:")
+	time.Sleep(3200 * time.Millisecond)
+	shutSchedCtx, cancelSched := context.WithTimeout(context.Background(), 3*time.Second)
+	_ = sched.Shutdown(shutSchedCtx)
+	cancelSched()
+
 	fmt.Println("\n───────────────────────────────────────────────")
 	fmt.Println("투어 완료. 위 로그가 chronos-go가 실제로 동작하는 모습입니다.")
 	fmt.Println("Redis 내부 상태를 직접 보려면 docs/OBSERVING.md 를 참고하세요.")
