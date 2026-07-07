@@ -161,6 +161,20 @@ func main() {
 	}
 	time.Sleep(600 * time.Millisecond)
 
+	section("6) Inspector (현재 적재 상태 조회): 큐 카운트를 프로그램에서 읽기")
+	insp := chronos.NewInspector(rdb)
+	// A future-scheduled task so there is something to show.
+	if _, err := chronos.Enqueue(ctx, client, ReminderArgs{Note: "나중에"}, chronos.WithProcessIn(time.Hour)); err != nil {
+		fmt.Printf("enqueue 실패: %v\n", err)
+	}
+	if queues, err := insp.Queues(ctx); err == nil {
+		for _, q := range queues {
+			fmt.Printf("   📊 queue=%s pending=%d active=%d scheduled=%d retry=%d archived=%d\n",
+				q.Queue, q.Pending, q.Active, q.Scheduled, q.Retry, q.Archived)
+		}
+	}
+	fmt.Println("   (같은 정보를 CLI로: go run ./cmd/chronos --db 15 queue ls)")
+
 	fmt.Println("\n───────────────────────────────────────────────")
 	fmt.Println("투어 완료. 위 로그가 chronos-go가 실제로 동작하는 모습입니다.")
 	fmt.Println("Redis 내부 상태를 직접 보려면 docs/OBSERVING.md 를 참고하세요.")
