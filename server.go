@@ -57,6 +57,10 @@ type ServerConfig struct {
 	// idempotent (the archived ZSET entry itself is deduplicated by task ID).
 	OnDeadLetter func(ctx context.Context, info *TaskInfo, err error)
 
+	// Metrics, if set, receives one observation per processed task. Use the
+	// contrib/prometheus implementation, or your own. Defaults to nil (disabled).
+	Metrics Metrics
+
 	// ForwardInterval is how often the retry ZSET is scanned for due tasks.
 	// Defaults to 1s.
 	ForwardInterval time.Duration
@@ -237,7 +241,9 @@ func (s *Server) fetchLoop(ctx context.Context) {
 // retry ZSET with backoff (until the retry budget is exhausted); a SkipRetry
 // error or an exhausted budget dead-letters the task and fires OnDeadLetter.
 func (s *Server) process(ctx context.Context, qname, streamID string, msg *base.TaskMessage) {
+	start := time.Now()
 	err := s.dispatchSafely(ctx, msg)
+	dur := time.Since(start)
 
 	// Ack/move operations must outlive shutdown cancellation so a finished task
 	// is never left dangling in the PEL — but they still need a deadline, or a
@@ -249,6 +255,7 @@ func (s *Server) process(ctx context.Context, qname, streamID string, msg *base.
 		if derr := s.rdb.Done(opCtx, qname, streamID, msg); derr != nil {
 			s.logger.Error("chronos: ack failed", "id", msg.ID, "error", derr)
 		}
+		s.observe(msg, OutcomeSuccess, dur)
 		return
 	}
 
@@ -258,6 +265,7 @@ func (s *Server) process(ctx context.Context, qname, streamID string, msg *base.
 	// Dead-letter when the error is non-retryable or the budget is exhausted.
 	if asSkipRetry(err) || msg.Retried >= msg.MaxRetry {
 		s.deadLetter(opCtx, qname, streamID, msg, err)
+		s.observe(msg, OutcomeDeadLetter, dur)
 		return
 	}
 
@@ -265,6 +273,14 @@ func (s *Server) process(ctx context.Context, qname, streamID string, msg *base.
 	retryAt := time.Now().Add(s.cfg.RetryDelayFunc(msg.Retried, err))
 	if rerr := s.rdb.Retry(opCtx, qname, streamID, msg, retryAt); rerr != nil {
 		s.logger.Error("chronos: retry scheduling failed", "id", msg.ID, "error", rerr)
+	}
+	s.observe(msg, OutcomeRetry, dur)
+}
+
+// observe reports a task outcome to the configured Metrics (no-op if unset).
+func (s *Server) observe(msg *base.TaskMessage, outcome TaskOutcome, dur time.Duration) {
+	if s.cfg.Metrics != nil {
+		s.cfg.Metrics.ObserveTask(msg.Queue, msg.Kind, outcome, dur)
 	}
 }
 
