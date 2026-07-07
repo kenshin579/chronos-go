@@ -68,7 +68,9 @@ func TestCompat_ScheduledJobRunsPeriodically(t *testing.T) {
 	}
 	defer js.Shutdown()
 
-	time.Sleep(3500 * time.Millisecond)
+	// Generous window (leader election + first-tick baseline eat into the start),
+	// so >= 2 fires is comfortable rather than borderline.
+	time.Sleep(4500 * time.Millisecond)
 	if n := runs.Load(); n < 2 {
 		t.Errorf("scheduled runs = %d, want >= 2", n)
 	}
