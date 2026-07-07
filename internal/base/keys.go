@@ -56,3 +56,24 @@ func ScheduledKey(qname string) string {
 func UniqueKey(qname, suffix string) string {
 	return QueueKeyPrefix(qname) + "unique:" + suffix
 }
+
+// LeaderKey is the STRING key holding the current scheduler leader's instance ID.
+func LeaderKey() string { return "chronos:leader" }
+
+// LeaderResignChannel is the pub/sub channel a leader publishes to on graceful
+// resignation so followers can re-elect immediately instead of waiting for TTL.
+func LeaderResignChannel() string { return "chronos:leader:resign" }
+
+// PeriodicDedupKey is the STRING key used to deduplicate a single scheduled
+// trigger. id is "<scheduleID>:<trigger_unix>". Wrapped in the queue hash tag so
+// it shares the queue's slot.
+func PeriodicDedupKey(qname, id string) string {
+	return QueueKeyPrefix(qname) + "pdedup:" + id
+}
+
+// ScheduleLastFiredKey is the STRING key holding the unix time a schedule last
+// fired, used to compute missed triggers across leader changes. It is global
+// (no queue hash tag) because a schedule is not tied to one queue's slot.
+func ScheduleLastFiredKey(scheduleID string) string {
+	return "chronos:sched:" + scheduleID + ":last"
+}
