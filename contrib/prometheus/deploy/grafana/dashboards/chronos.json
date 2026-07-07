@@ -1,0 +1,43 @@
+{
+  "title": "chronos-go",
+  "uid": "chronos-go",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "time": { "from": "now-15m", "to": "now" },
+  "refresh": "5s",
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Task throughput by outcome (per s)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "sum by (outcome) (rate(chronos_tasks_processed_total[1m]))", "legendFormat": "{{outcome}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Task duration (p50 / p95, seconds)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        { "expr": "histogram_quantile(0.5, sum by (le) (rate(chronos_task_duration_seconds_bucket[1m])))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, sum by (le) (rate(chronos_task_duration_seconds_bucket[1m])))", "legendFormat": "p95" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Queue depth by state",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        { "expr": "sum by (state) (chronos_queue_tasks)", "legendFormat": "{{state}}" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Dead-letters (5m)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        { "expr": "sum(increase(chronos_tasks_processed_total{outcome=\"dead_letter\"}[5m]))" }
+      ]
+    }
+  ]
+}
