@@ -100,6 +100,22 @@ redis-cli -n 15 GET  chronos:{default}:unique:<kind>:<sha256>
 
 ---
 
+## 2b. CLI로 조회·관리
+
+redis-cli로 원시 키를 보는 대신, `chronos` CLI로 상태를 조회하고 태스크를 재실행/삭제할 수 있다.
+
+```bash
+go run ./cmd/chronos --db 15 queue ls                      # 큐별 상태 카운트
+go run ./cmd/chronos --db 15 task ls default archived      # dead-letter 목록
+go run ./cmd/chronos --db 15 task run default <task-id>    # 지금 재실행
+go run ./cmd/chronos --db 15 task rm  default <task-id>    # 삭제
+```
+
+`--redis <addr>`(기본 `$REDIS_ADDR` 또는 `127.0.0.1:6379`), `--db <n>`(기본 0)로 대상 지정.
+실사용에서는 앱이 쓰는 DB에 맞춰 `--db`를 지정한다(테스트/데모는 15).
+
+---
+
 ## 3. 자동화된 검증 (테스트)
 
 관찰과 별개로, 회귀 방지는 테스트가 담당한다. 카노니컬 명령:

@@ -3,6 +3,7 @@ package rdb
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/kenshin579/chronos-go/internal/base"
 	"github.com/kenshin579/chronos-go/internal/testutil"
@@ -136,5 +137,52 @@ func TestDone_AcksAndDeletesTask(t *testing.T) {
 	}
 	if pending.Count != 0 {
 		t.Errorf("pending count = %d, want 0", pending.Count)
+	}
+}
+
+func TestDone_TrimsStreamEntry(t *testing.T) {
+	client := testutil.NewRedis(t)
+	r := NewRDB(client)
+	ctx := context.Background()
+
+	if err := r.EnsureGroup(ctx, "default"); err != nil {
+		t.Fatalf("ensure group: %v", err)
+	}
+	msg := &base.TaskMessage{ID: "t1", Kind: "k", Payload: []byte("{}"), Queue: "default"}
+	if err := r.Enqueue(ctx, msg); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	got, streamID, err := r.Dequeue(ctx, "c1", 0, "default")
+	if err != nil {
+		t.Fatalf("dequeue: %v", err)
+	}
+	if err := r.Done(ctx, "default", streamID, got); err != nil {
+		t.Fatalf("done: %v", err)
+	}
+
+	// After Done the stream must be empty (entry deleted, not just acked).
+	if n, _ := client.XLen(ctx, base.StreamKey("default")).Result(); n != 0 {
+		t.Errorf("stream len after Done = %d, want 0 (entry must be XDEL'd)", n)
+	}
+}
+
+func TestRetry_TrimsStreamEntry(t *testing.T) {
+	client := testutil.NewRedis(t)
+	r := NewRDB(client)
+	ctx := context.Background()
+
+	if err := r.EnsureGroup(ctx, "default"); err != nil {
+		t.Fatalf("ensure group: %v", err)
+	}
+	msg := &base.TaskMessage{ID: "t1", Kind: "k", Payload: []byte("{}"), Queue: "default", MaxRetry: 3}
+	if err := r.Enqueue(ctx, msg); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	got, streamID, _ := r.Dequeue(ctx, "c1", 0, "default")
+	if err := r.Retry(ctx, "default", streamID, got, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if n, _ := client.XLen(ctx, base.StreamKey("default")).Result(); n != 0 {
+		t.Errorf("stream len after Retry = %d, want 0", n)
 	}
 }

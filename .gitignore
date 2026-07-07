@@ -34,3 +34,6 @@ vendor/
 # Redis persistence artifacts (created by a local test redis-server)
 dump.rdb
 *.rdb
+
+# Compiled chronos CLI binary (from `go build ./cmd/chronos`)
+/chronos

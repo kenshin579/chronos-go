@@ -122,8 +122,11 @@ func (r *RDB) Dequeue(ctx context.Context, consumer string, block time.Duration,
 
 	raw, err := r.client.HGet(ctx, base.TaskKey(qname, taskID), "msg").Result()
 	if err == redis.Nil {
-		// Orphan stream entry (body already gone): ack and report no task.
-		_ = r.client.XAck(ctx, streamKey, ConsumerGroup, entry.ID).Err()
+		// Orphan stream entry (body already gone): ack, delete it, report no task.
+		pipe := r.client.TxPipeline()
+		pipe.XAck(ctx, streamKey, ConsumerGroup, entry.ID)
+		pipe.XDel(ctx, streamKey, entry.ID)
+		_, _ = pipe.Exec(ctx)
 		return nil, "", ErrNoTask
 	}
 	if err != nil {
@@ -158,6 +161,7 @@ return 1
 func (r *RDB) Done(ctx context.Context, qname, streamID string, msg *base.TaskMessage) error {
 	pipe := r.client.TxPipeline()
 	pipe.XAck(ctx, base.StreamKey(qname), ConsumerGroup, streamID)
+	pipe.XDel(ctx, base.StreamKey(qname), streamID)
 	pipe.Del(ctx, base.TaskKey(qname, msg.ID))
 	if _, err := pipe.Exec(ctx); err != nil {
 		return err

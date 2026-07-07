@@ -16,6 +16,7 @@ import (
 // ARGV[5] score, ARGV[6] taskID.
 var moveToZSetCmd = redis.NewScript(`
 redis.call("XACK", KEYS[1], ARGV[1], ARGV[2])
+redis.call("XDEL", KEYS[1], ARGV[2])
 redis.call("HSET", KEYS[2], "msg", ARGV[3], "state", ARGV[4])
 redis.call("ZADD", KEYS[3], ARGV[5], ARGV[6])
 return 1

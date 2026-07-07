@@ -80,3 +80,32 @@ func TestRecover_ArchivesWhenRetriesExhausted(t *testing.T) {
 		t.Errorf("task not in archived zset: %v", err)
 	}
 }
+
+// An orphan PEL entry (body deleted while in-flight) must be trimmed from the
+// stream by Recover, not merely acked — otherwise it leaks and inflates counts.
+func TestRecover_OrphanEntryIsTrimmed(t *testing.T) {
+	client := testutil.NewRedis(t)
+	r := NewRDB(client)
+	ctx := context.Background()
+	if err := r.EnsureGroup(ctx, "default"); err != nil {
+		t.Fatalf("ensure group: %v", err)
+	}
+	if err := r.Enqueue(ctx, &base.TaskMessage{ID: "t1", Kind: "k", Payload: []byte("{}"), Queue: "default"}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	// Dequeue with a "dead" consumer so the entry sits in the PEL, then delete the
+	// body to make it an orphan.
+	if _, _, err := r.Dequeue(ctx, "dead", 0, "default"); err != nil {
+		t.Fatalf("dequeue: %v", err)
+	}
+	if err := client.Del(ctx, base.TaskKey("default", "t1")).Err(); err != nil {
+		t.Fatalf("del body: %v", err)
+	}
+
+	if _, _, err := r.Recover(ctx, "default", "recoverer", 0, 100); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if n, _ := client.XLen(ctx, base.StreamKey("default")).Result(); n != 0 {
+		t.Errorf("stream len after recovering an orphan = %d, want 0 (must be XDEL'd)", n)
+	}
+}
