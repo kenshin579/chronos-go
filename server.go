@@ -402,17 +402,14 @@ func (s *Server) recovererLoop(ctx context.Context) {
 }
 
 // janitorLoop periodically deletes expired / over-capacity archived tasks from
-// each queue. Removals are atomic and idempotent, so running it on every server
-// instance is safe. maxSize < 0 disables the size cap.
+// each queue. Removals are atomic, batched, and idempotent, so running it on
+// every server instance is safe. A negative MaxArchived disables the size cap
+// (handled by TrimArchived).
 func (s *Server) janitorLoop(ctx context.Context) {
 	defer s.wg.Done()
 	ticker := time.NewTicker(s.cfg.JanitorInterval)
 	defer ticker.Stop()
 	queues := s.queueNames()
-	maxSize := s.cfg.MaxArchived
-	if maxSize < 0 {
-		maxSize = 1<<62 - 1 // effectively unbounded
-	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -420,11 +417,16 @@ func (s *Server) janitorLoop(ctx context.Context) {
 		case <-ticker.C:
 			cutoff := time.Now().Add(-s.cfg.ArchivedRetention)
 			for _, q := range queues {
-				if _, err := s.rdb.TrimArchived(ctx, q, cutoff, maxSize, janitorBatchSize); err != nil {
+				n, err := s.rdb.TrimArchived(ctx, q, cutoff, s.cfg.MaxArchived, janitorBatchSize)
+				if err != nil {
 					if ctx.Err() != nil {
 						return
 					}
 					s.logger.Error("chronos: janitor trim failed", "queue", q, "error", err)
+					continue
+				}
+				if n > 0 {
+					s.logger.Debug("chronos: janitor trimmed archived", "queue", q, "removed", n)
 				}
 			}
 		}

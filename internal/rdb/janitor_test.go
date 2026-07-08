@@ -82,3 +82,52 @@ func TestTrimArchived_EnforcesMaxSize(t *testing.T) {
 		t.Error("newest 'e' should be kept")
 	}
 }
+
+// The size-cap pass must be bounded by batch so one script never deletes an
+// unbounded number of entries (Redis blocking risk); it converges over calls.
+func TestTrimArchived_SizeCapRespectsBatch(t *testing.T) {
+	client := testutil.NewRedis(t)
+	r := NewRDB(client)
+	ctx := context.Background()
+
+	now := time.Now()
+	for i := 0; i < 6; i++ { // 6 fresh, none age-expired
+		archiveDirect(t, client, "default", string(rune('a'+i)), now.Add(time.Duration(i)*time.Second))
+	}
+	// maxSize=0 → all 6 are "over", but batch=2 caps this call to 2 removals.
+	n, err := r.TrimArchived(ctx, "default", now.Add(-24*time.Hour), 0, 2)
+	if err != nil {
+		t.Fatalf("trim: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("removed = %d, want 2 (size cap bounded by batch)", n)
+	}
+	if card, _ := client.ZCard(ctx, base.ArchivedKey("default")).Result(); card != 4 {
+		t.Errorf("archived = %d, want 4 (6 - 2)", card)
+	}
+}
+
+// A negative maxSize disables the size cap entirely (must not delete anything by
+// size, regardless of ZCARD). Guards the "negative = disable" contract at the
+// rdb layer, not just in the caller.
+func TestTrimArchived_NegativeMaxSizeDisablesCap(t *testing.T) {
+	client := testutil.NewRedis(t)
+	r := NewRDB(client)
+	ctx := context.Background()
+
+	now := time.Now()
+	for i := 0; i < 3; i++ {
+		archiveDirect(t, client, "default", string(rune('a'+i)), now.Add(time.Duration(i)*time.Second))
+	}
+	// cutoff far past → nothing age-expired; negative maxSize → size pass skipped.
+	n, err := r.TrimArchived(ctx, "default", now.Add(-24*time.Hour), -1, 100)
+	if err != nil {
+		t.Fatalf("trim: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("removed = %d, want 0 (negative maxSize disables size cap)", n)
+	}
+	if card, _ := client.ZCard(ctx, base.ArchivedKey("default")).Result(); card != 3 {
+		t.Errorf("archived = %d, want 3 (untouched)", card)
+	}
+}
