@@ -1,0 +1,6 @@
+global:
+  scrape_interval: 2s
+scrape_configs:
+  - job_name: chronos
+    static_configs:
+      - targets: ["loadgen:2112"]
