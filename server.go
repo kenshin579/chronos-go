@@ -51,10 +51,11 @@ type ServerConfig struct {
 	// OnDeadLetter is invoked when a task exhausts its retries (or returns a
 	// SkipRetry error). It fires whether the task is archived or discarded.
 	//
-	// It may fire more than once for the same task: if a handler runs longer than
-	// RecoverMinIdle, the recoverer can reclaim and dead-letter the task while the
-	// original worker is still running, then dead-letter it again. Make the hook
-	// idempotent (the archived ZSET entry itself is deduplicated by task ID).
+	// The heartbeat keeps an actively-processing task's lease fresh, so the
+	// recoverer does not normally reclaim it. It may still fire more than once in
+	// pathological cases (the server/heartbeat unavailable long enough for the
+	// lease to lapse), so make the hook idempotent (the archived ZSET entry is
+	// deduplicated by task ID).
 	OnDeadLetter func(ctx context.Context, info *TaskInfo, err error)
 
 	// Metrics, if set, receives one observation per processed task. Use the
@@ -67,9 +68,11 @@ type ServerConfig struct {
 	// RecoverInterval is how often stuck PEL entries are reclaimed. Defaults to 15s.
 	RecoverInterval time.Duration
 	// RecoverMinIdle is how long a PEL entry must be idle before it is treated as
-	// abandoned. Defaults to 30s when unset (<= 0). Handlers that can run longer
-	// than this may be reclaimed and reprocessed concurrently (at-least-once), so
-	// raise it comfortably above the expected handler duration.
+	// abandoned. Defaults to 30s when unset (<= 0). The heartbeat refreshes the
+	// lease of in-flight tasks every HeartbeatInterval, so a task that runs longer
+	// than RecoverMinIdle is safe as long as this server (its heartbeat) is alive;
+	// RecoverMinIdle is the window after a worker actually dies before its tasks
+	// are reclaimed.
 	RecoverMinIdle time.Duration
 
 	// HeartbeatInterval is how often the server refreshes the lease and unique

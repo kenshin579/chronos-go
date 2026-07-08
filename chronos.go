@@ -131,11 +131,12 @@ func WithProcessIn(d time.Duration) Option {
 // returns ErrDuplicateTask. The lock is released when the task reaches a
 // terminal state (completed / archived / discarded).
 //
-// ttl is the lock's expiry. Because the current milestone does not renew the
-// TTL during processing, ttl also acts as a practical upper bound: set it
-// comfortably above the task's expected total lifetime (processing + retries +
-// backoff). For a delayed task, the lock TTL is automatically extended to cover
-// the delay, so ttl only needs to cover the post-availability lifetime.
+// While a task is actively being processed, the server's heartbeat renews the
+// lock's TTL, so a single attempt that runs longer than ttl still holds the
+// lock. ttl mainly bounds the lock for the time a task spends waiting (pending /
+// scheduled / retry backoff) where no worker is renewing it; set it comfortably
+// above the expected total waiting time. For a delayed task the lock TTL is
+// automatically extended to cover the delay.
 func WithUnique(ttl time.Duration) Option {
 	return optionFunc(func(o *enqueueOptions) {
 		if ttl > 0 {
