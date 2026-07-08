@@ -2,6 +2,7 @@ package chronos
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -74,4 +75,47 @@ func TestEndToEnd_ProcessesManyTasksAcrossQueues(t *testing.T) {
 		t.Errorf("distinct tasks seen = %d, want %d", len(seen), total)
 	}
 	seenMu.Unlock()
+}
+
+func TestIntegration_ArchivedStabilizesUnderRetention(t *testing.T) {
+	client := testutil.NewRedis(t)
+	c := NewClient(client)
+	defer c.Close()
+
+	// Handler always fails → every task dead-letters (fast archived growth).
+	mux := NewMux()
+	AddHandler(mux, func(ctx context.Context, task *Task[poisonArgs]) error {
+		return errors.New("always fails")
+	})
+	srv := NewServer(client, ServerConfig{
+		Queues:            map[string]int{"default": 1},
+		Concurrency:       4,
+		ForwardInterval:   50 * time.Millisecond,
+		RetryDelayFunc:    func(retried int, err error) time.Duration { return 20 * time.Millisecond },
+		ArchivedRetention: 1 * time.Second,        // very short so archived drains quickly
+		JanitorInterval:   100 * time.Millisecond, // clean often
+	})
+	ctx := context.Background()
+	if err := srv.Start(ctx, mux); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	insp := NewInspector(client)
+	// Continuously enqueue failing tasks for ~2s.
+	stop := time.Now().Add(2 * time.Second)
+	for i := 0; time.Now().Before(stop); i++ {
+		_, _ = Enqueue(ctx, c, poisonArgs{ID: i}, WithMaxRetry(0)) // MaxRetry 0 → immediate dead-letter
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// With a 1s retention + frequent janitor, archived must not grow unbounded:
+	// after letting the janitor run past the retention window, it should be small.
+	eventually(t, 6*time.Second, func() bool {
+		qs, err := insp.Queues(ctx)
+		if err != nil || len(qs) == 0 {
+			return false
+		}
+		return qs[0].Archived <= 5 // drained close to zero (retention 1s ≫ nothing lingers)
+	}, "archived should stabilize (not grow unbounded) under short retention")
 }
