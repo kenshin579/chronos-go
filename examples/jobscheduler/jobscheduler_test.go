@@ -3,7 +3,6 @@ package jobscheduler
 import (
 	"context"
 	"os"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -79,12 +78,15 @@ func TestCompat_ScheduledJobRunsPeriodically(t *testing.T) {
 func TestCompat_EnqueueUniqueDedup(t *testing.T) {
 	js := New(newRedis(t), []string{"q0"})
 	var runs atomic.Int32
-	var wg sync.WaitGroup
-	wg.Add(1)
-	var once sync.Once
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
 	if err := js.RegisterTaskHandler("dedup", func(ctx context.Context, p []byte) error {
 		runs.Add(1)
-		once.Do(wg.Done)
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-release // stay in-flight (unique lock held) until the test releases
 		return nil
 	}); err != nil {
 		t.Fatalf("register: %v", err)
@@ -95,15 +97,23 @@ func TestCompat_EnqueueUniqueDedup(t *testing.T) {
 	defer js.Shutdown()
 
 	ctx := context.Background()
-	// Two enqueues with the same unique TTL before processing → only one runs.
 	if err := js.Enqueue(ctx, "dedup", []byte("x"), WithUniqueTTL(time.Minute)); err != nil {
 		t.Fatalf("enqueue1: %v", err)
+	}
+	// Wait until the first task is actively processing (its unique lock is held)
+	// before enqueueing the duplicate — otherwise the first could complete and
+	// release the lock first, making the second a legitimate (non-duplicate)
+	// enqueue and the test flaky.
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first task did not start")
 	}
 	if err := js.Enqueue(ctx, "dedup", []byte("x"), WithUniqueTTL(time.Minute)); err != nil {
 		t.Fatalf("enqueue2 (dup) should return nil: %v", err)
 	}
-	wg.Wait()
-	time.Sleep(500 * time.Millisecond) // give any (wrongly) duplicated task time to run
+	close(release)
+	time.Sleep(500 * time.Millisecond) // let any wrongly-enqueued duplicate run
 	if n := runs.Load(); n != 1 {
 		t.Errorf("runs = %d, want 1 (dedup)", n)
 	}
