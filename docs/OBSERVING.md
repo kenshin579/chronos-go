@@ -129,6 +129,21 @@ redis-cli -n 15 KEYS 'chronos:{default}:pdedup:*'  # 트리거별 결정적 dedu
 리더가 graceful shutdown하면 `chronos:leader`가 사라지고 `chronos:leader:resign`
 채널로 통지되어, 다른 인스턴스가 즉시 재선출된다.
 
+## 2d. Retention / janitor (archived 자동 정리)
+
+dead-letter(archived) 태스크는 `ServerConfig.ArchivedRetention`(기본 7일) 경과 후,
+또는 `MaxArchived`(기본 10000) 초과 시 오래된 것부터 janitor가 자동 삭제한다. 그래서
+`chronos_queue_tasks{state="archived"}`는 무한 증가하지 않고 톱니 모양으로 안정화된다.
+
+- 짧게 설정해 관찰: `ArchivedRetention: 30*time.Second, JanitorInterval: 5*time.Second`
+- 수동 정리는 여전히 가능: `chronos task rm <queue> <id>` / `task run`으로 재실행
+- janitor는 원자적·멱등이라 모든 서버 인스턴스에서 돌아도 안전하다(리더 불필요).
+
+관찰:
+```bash
+redis-cli -n 0 ZCARD 'chronos:{default}:archived'   # 시간이 지나면 오르내림(톱니)
+```
+
 ---
 
 ## 3. 자동화된 검증 (테스트)

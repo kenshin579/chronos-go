@@ -49,9 +49,11 @@ func main() {
 	})
 
 	srv := chronos.NewServer(rdb, chronos.ServerConfig{
-		Queues:      map[string]int{"default": 1, "critical": 1},
-		Concurrency: 8,
-		Metrics:     metrics,
+		Queues:            map[string]int{"default": 1, "critical": 1},
+		Concurrency:       8,
+		Metrics:           metrics,
+		ArchivedRetention: 30 * time.Second, // demo: archived drains so the graph sawtooths instead of climbing
+		JanitorInterval:   5 * time.Second,
 	})
 	if err := srv.Start(ctx, mux); err != nil {
 		log.Fatalf("server start: %v", err)
