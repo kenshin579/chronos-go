@@ -56,3 +56,33 @@ func TestServer_HeartbeatPreventsRecovererDoubleRun(t *testing.T) {
 		t.Errorf("runs = %d, want 1 (heartbeat must prevent recoverer double-run)", n)
 	}
 }
+
+// A HeartbeatInterval >= RecoverMinIdle (or unset) must be clamped below the
+// recover window, so a misconfiguration cannot let the recoverer reclaim an
+// actively-processing task. Also guards against a zero interval (NewTicker panic).
+func TestNewServer_ClampsHeartbeatInterval(t *testing.T) {
+	client := testutil.NewRedis(t)
+
+	// Too large (>= RecoverMinIdle) → clamped to RecoverMinIdle/3.
+	s := NewServer(client, ServerConfig{
+		Queues:            map[string]int{"default": 1},
+		RecoverMinIdle:    3 * time.Second,
+		HeartbeatInterval: 5 * time.Second,
+	})
+	if s.cfg.HeartbeatInterval >= s.cfg.RecoverMinIdle {
+		t.Errorf("HeartbeatInterval = %v, want < RecoverMinIdle (%v)", s.cfg.HeartbeatInterval, s.cfg.RecoverMinIdle)
+	}
+	if s.cfg.HeartbeatInterval != time.Second { // 3s/3
+		t.Errorf("HeartbeatInterval = %v, want 1s", s.cfg.HeartbeatInterval)
+	}
+
+	// Explicit small-but-valid value is respected.
+	s2 := NewServer(client, ServerConfig{
+		Queues:            map[string]int{"default": 1},
+		RecoverMinIdle:    2 * time.Second,
+		HeartbeatInterval: 200 * time.Millisecond,
+	})
+	if s2.cfg.HeartbeatInterval != 200*time.Millisecond {
+		t.Errorf("valid HeartbeatInterval overwritten: %v", s2.cfg.HeartbeatInterval)
+	}
+}

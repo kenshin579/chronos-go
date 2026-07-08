@@ -126,8 +126,16 @@ func NewServer(r redis.UniversalClient, cfg ServerConfig) *Server {
 	if cfg.RecoverMinIdle <= 0 {
 		cfg.RecoverMinIdle = 30 * time.Second
 	}
-	if cfg.HeartbeatInterval <= 0 {
+	// The heartbeat must run several times within the recover window, or an
+	// actively-processing task could be reclaimed before its lease is refreshed.
+	// Clamp any unset OR too-large value (>= RecoverMinIdle) to RecoverMinIdle/3,
+	// with a small floor so a tiny RecoverMinIdle can't yield a zero interval
+	// (time.NewTicker panics on <= 0).
+	if cfg.HeartbeatInterval <= 0 || cfg.HeartbeatInterval >= cfg.RecoverMinIdle {
 		cfg.HeartbeatInterval = cfg.RecoverMinIdle / 3
+	}
+	if cfg.HeartbeatInterval < time.Millisecond {
+		cfg.HeartbeatInterval = time.Millisecond
 	}
 	return &Server{
 		rdb:      rdb.NewRDB(r),
