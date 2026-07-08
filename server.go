@@ -55,10 +55,11 @@ type ServerConfig struct {
 	// OnDeadLetter is invoked when a task exhausts its retries (or returns a
 	// SkipRetry error). It fires whether the task is archived or discarded.
 	//
-	// It may fire more than once for the same task: if a handler runs longer than
-	// RecoverMinIdle, the recoverer can reclaim and dead-letter the task while the
-	// original worker is still running, then dead-letter it again. Make the hook
-	// idempotent (the archived ZSET entry itself is deduplicated by task ID).
+	// The heartbeat keeps an actively-processing task's lease fresh, so the
+	// recoverer does not normally reclaim it. It may still fire more than once in
+	// pathological cases (the server/heartbeat unavailable long enough for the
+	// lease to lapse), so make the hook idempotent (the archived ZSET entry is
+	// deduplicated by task ID).
 	OnDeadLetter func(ctx context.Context, info *TaskInfo, err error)
 
 	// Metrics, if set, receives one observation per processed task. Use the
@@ -71,10 +72,17 @@ type ServerConfig struct {
 	// RecoverInterval is how often stuck PEL entries are reclaimed. Defaults to 15s.
 	RecoverInterval time.Duration
 	// RecoverMinIdle is how long a PEL entry must be idle before it is treated as
-	// abandoned. Defaults to 30s when unset (<= 0). Handlers that can run longer
-	// than this may be reclaimed and reprocessed concurrently (at-least-once), so
-	// raise it comfortably above the expected handler duration.
+	// abandoned. Defaults to 30s when unset (<= 0). The heartbeat refreshes the
+	// lease of in-flight tasks every HeartbeatInterval, so a task that runs longer
+	// than RecoverMinIdle is safe as long as this server (its heartbeat) is alive;
+	// RecoverMinIdle is the window after a worker actually dies before its tasks
+	// are reclaimed.
 	RecoverMinIdle time.Duration
+
+	// HeartbeatInterval is how often the server refreshes the lease and unique
+	// lock of in-flight tasks. Defaults to RecoverMinIdle/3. Must be shorter than
+	// RecoverMinIdle so an actively-processing task is never reclaimed.
+	HeartbeatInterval time.Duration
 
 	// ArchivedRetention is how long a dead-lettered (archived) task is kept
 	// before the janitor deletes it. Defaults to 7 days (168h).
@@ -98,6 +106,17 @@ type Server struct {
 	sem    chan struct{}
 	wg     sync.WaitGroup
 	cancel context.CancelFunc
+
+	inflightMu sync.Mutex
+	inflight   map[string]inflightEntry
+}
+
+// inflightEntry is a task currently being processed by this server, tracked so
+// the heartbeat can refresh its lease and unique lock.
+type inflightEntry struct {
+	streamID  string
+	queue     string
+	uniqueKey string
 }
 
 // NewServer returns a Server backed by the given Redis client.
@@ -121,6 +140,17 @@ func NewServer(r redis.UniversalClient, cfg ServerConfig) *Server {
 	if cfg.RecoverMinIdle <= 0 {
 		cfg.RecoverMinIdle = 30 * time.Second
 	}
+	// The heartbeat must run several times within the recover window, or an
+	// actively-processing task could be reclaimed before its lease is refreshed.
+	// Clamp any unset OR too-large value (>= RecoverMinIdle) to RecoverMinIdle/3,
+	// with a small floor so a tiny RecoverMinIdle can't yield a zero interval
+	// (time.NewTicker panics on <= 0).
+	if cfg.HeartbeatInterval <= 0 || cfg.HeartbeatInterval >= cfg.RecoverMinIdle {
+		cfg.HeartbeatInterval = cfg.RecoverMinIdle / 3
+	}
+	if cfg.HeartbeatInterval < time.Millisecond {
+		cfg.HeartbeatInterval = time.Millisecond
+	}
 	if cfg.ArchivedRetention <= 0 {
 		cfg.ArchivedRetention = 7 * 24 * time.Hour
 	}
@@ -136,6 +166,7 @@ func NewServer(r redis.UniversalClient, cfg ServerConfig) *Server {
 		consumer: uuid.NewString(),
 		logger:   logger,
 		sem:      make(chan struct{}, cfg.Concurrency),
+		inflight: make(map[string]inflightEntry),
 	}
 }
 
@@ -173,6 +204,9 @@ func (s *Server) Start(ctx context.Context, mux *Mux) error {
 
 	s.wg.Add(1)
 	go s.recovererLoop(runCtx)
+
+	s.wg.Add(1)
+	go s.heartbeaterLoop(runCtx)
 
 	s.wg.Add(1)
 	go s.janitorLoop(runCtx)
@@ -257,6 +291,8 @@ func (s *Server) fetchLoop(ctx context.Context) {
 		go func(qname, sid string, m *base.TaskMessage) {
 			defer s.wg.Done()
 			defer func() { <-s.sem }()
+			s.trackInflight(m.ID, inflightEntry{streamID: sid, queue: qname, uniqueKey: m.UniqueKey})
+			defer s.untrackInflight(m.ID)
 			s.process(ctx, qname, sid, m)
 		}(msg.Queue, streamID, msg)
 	}
@@ -301,6 +337,63 @@ func (s *Server) process(ctx context.Context, qname, streamID string, msg *base.
 		s.logger.Error("chronos: retry scheduling failed", "id", msg.ID, "error", rerr)
 	}
 	s.observe(msg, OutcomeRetry, dur)
+}
+
+func (s *Server) trackInflight(id string, e inflightEntry) {
+	s.inflightMu.Lock()
+	s.inflight[id] = e
+	s.inflightMu.Unlock()
+}
+
+func (s *Server) untrackInflight(id string) {
+	s.inflightMu.Lock()
+	delete(s.inflight, id)
+	s.inflightMu.Unlock()
+}
+
+// heartbeaterLoop periodically refreshes the lease (PEL idle) and unique lock
+// TTL of every in-flight task, so a long-running task is not reclaimed by the
+// recoverer and does not lose its unique lock mid-processing.
+func (s *Server) heartbeaterLoop(ctx context.Context) {
+	defer s.wg.Done()
+	ticker := time.NewTicker(s.cfg.HeartbeatInterval)
+	defer ticker.Stop()
+	// Renew unique locks well past the recover window so a crash (heartbeat stops)
+	// lets the recoverer take over before the lock lapses.
+	renewTTL := 2 * s.cfg.RecoverMinIdle
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.beat(ctx, renewTTL)
+		}
+	}
+}
+
+// beat refreshes all currently in-flight tasks.
+func (s *Server) beat(ctx context.Context, renewTTL time.Duration) {
+	s.inflightMu.Lock()
+	byQueue := make(map[string][]string)
+	var uniqueKeys []string
+	for _, e := range s.inflight {
+		byQueue[e.queue] = append(byQueue[e.queue], e.streamID)
+		if e.uniqueKey != "" {
+			uniqueKeys = append(uniqueKeys, e.uniqueKey)
+		}
+	}
+	s.inflightMu.Unlock()
+
+	for q, ids := range byQueue {
+		if err := s.rdb.ExtendLease(ctx, q, s.consumer, ids); err != nil && ctx.Err() == nil {
+			s.logger.Error("chronos: extend lease failed", "queue", q, "error", err)
+		}
+	}
+	if len(uniqueKeys) > 0 {
+		if err := s.rdb.RenewUnique(ctx, uniqueKeys, renewTTL); err != nil && ctx.Err() == nil {
+			s.logger.Error("chronos: renew unique failed", "error", err)
+		}
+	}
 }
 
 // observe reports a task outcome to the configured Metrics (no-op if unset).

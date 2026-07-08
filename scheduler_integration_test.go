@@ -43,16 +43,17 @@ func TestIntegration_SchedulerFailover(t *testing.T) {
 	s2 := mk()
 	defer s2.Shutdown(context.Background())
 
-	time.Sleep(1500 * time.Millisecond)
+	// Wait for scheduling to actually be running before measuring — under heavy
+	// (-race) load the first fire can take longer than a fixed sleep, which would
+	// make a sleep-based baseline flaky.
+	eventually(t, 8*time.Second, func() bool { return runs.Load() >= 1 },
+		"scheduler should fire at least once before failover")
 	before := runs.Load()
 
 	// Leader resigns (graceful). s2 should take over via the resign notification.
 	s1.Shutdown(context.Background())
 
-	time.Sleep(2500 * time.Millisecond)
-	after := runs.Load()
-
-	if after <= before {
-		t.Errorf("scheduling stalled after failover: before=%d after=%d", before, after)
-	}
+	// After failover, scheduling must keep making progress (more fires than before).
+	eventually(t, 8*time.Second, func() bool { return runs.Load() > before },
+		"scheduling should continue after leader failover")
 }

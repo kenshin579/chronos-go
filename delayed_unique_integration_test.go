@@ -94,6 +94,63 @@ func TestIntegration_UniqueLockHeldThroughProcessingUntilCompletion(t *testing.T
 	}, "unique lock should be released after the task completes")
 }
 
+// With the heartbeat renewing the lock, a unique task whose processing runs
+// LONGER than its unique TTL still blocks a duplicate enqueue — the very gap M3
+// could not close without renewal.
+func TestIntegration_HeartbeatKeepsUniqueLockBeyondTTL(t *testing.T) {
+	client := testutil.NewRedis(t)
+	c := NewClient(client)
+	defer c.Close()
+
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	doRelease := func() { releaseOnce.Do(func() { close(release) }) }
+	started := make(chan struct{}, 1)
+
+	mux := NewMux()
+	AddHandler(mux, func(ctx context.Context, task *Task[slowArgs]) error {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-release
+		return nil
+	})
+
+	srv := NewServer(client, ServerConfig{
+		Queues:            map[string]int{"default": 1},
+		Concurrency:       4,
+		RecoverInterval:   time.Hour, // keep recoverer out of the way
+		RecoverMinIdle:    2 * time.Second,
+		HeartbeatInterval: 200 * time.Millisecond,
+	})
+	ctx := context.Background()
+	if err := srv.Start(ctx, mux); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() { doRelease(); srv.Shutdown(context.Background()) }()
+
+	// Unique TTL is SHORT (1s); the handler will be held far longer than that.
+	if _, err := Enqueue(ctx, c, slowArgs{ID: 1}, WithUnique(1*time.Second)); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler did not start")
+	}
+
+	// Wait well past the 1s TTL while the handler is still processing.
+	time.Sleep(2500 * time.Millisecond)
+
+	// Without renewal the lock would have expired; with the heartbeat it is still
+	// held, so the duplicate is rejected.
+	if _, err := Enqueue(ctx, c, slowArgs{ID: 1}, WithUnique(1*time.Second)); !errors.Is(err, ErrDuplicateTask) {
+		t.Fatalf("duplicate during long processing err = %v, want ErrDuplicateTask (heartbeat should hold the lock)", err)
+	}
+	doRelease()
+}
+
 func TestIntegration_DelayedTaskExecutesOnce(t *testing.T) {
 	client := testutil.NewRedis(t)
 	c := NewClient(client)
