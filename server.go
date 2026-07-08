@@ -71,6 +71,11 @@ type ServerConfig struct {
 	// than this may be reclaimed and reprocessed concurrently (at-least-once), so
 	// raise it comfortably above the expected handler duration.
 	RecoverMinIdle time.Duration
+
+	// HeartbeatInterval is how often the server refreshes the lease and unique
+	// lock of in-flight tasks. Defaults to RecoverMinIdle/3. Must be shorter than
+	// RecoverMinIdle so an actively-processing task is never reclaimed.
+	HeartbeatInterval time.Duration
 }
 
 // Server fetches tasks from Redis and dispatches them to handlers.
@@ -84,6 +89,17 @@ type Server struct {
 	sem    chan struct{}
 	wg     sync.WaitGroup
 	cancel context.CancelFunc
+
+	inflightMu sync.Mutex
+	inflight   map[string]inflightEntry
+}
+
+// inflightEntry is a task currently being processed by this server, tracked so
+// the heartbeat can refresh its lease and unique lock.
+type inflightEntry struct {
+	streamID  string
+	queue     string
+	uniqueKey string
 }
 
 // NewServer returns a Server backed by the given Redis client.
@@ -107,12 +123,16 @@ func NewServer(r redis.UniversalClient, cfg ServerConfig) *Server {
 	if cfg.RecoverMinIdle <= 0 {
 		cfg.RecoverMinIdle = 30 * time.Second
 	}
+	if cfg.HeartbeatInterval <= 0 {
+		cfg.HeartbeatInterval = cfg.RecoverMinIdle / 3
+	}
 	return &Server{
 		rdb:      rdb.NewRDB(r),
 		cfg:      cfg,
 		consumer: uuid.NewString(),
 		logger:   logger,
 		sem:      make(chan struct{}, cfg.Concurrency),
+		inflight: make(map[string]inflightEntry),
 	}
 }
 
@@ -150,6 +170,9 @@ func (s *Server) Start(ctx context.Context, mux *Mux) error {
 
 	s.wg.Add(1)
 	go s.recovererLoop(runCtx)
+
+	s.wg.Add(1)
+	go s.heartbeaterLoop(runCtx)
 	return nil
 }
 
@@ -231,6 +254,8 @@ func (s *Server) fetchLoop(ctx context.Context) {
 		go func(qname, sid string, m *base.TaskMessage) {
 			defer s.wg.Done()
 			defer func() { <-s.sem }()
+			s.trackInflight(m.ID, inflightEntry{streamID: sid, queue: qname, uniqueKey: m.UniqueKey})
+			defer s.untrackInflight(m.ID)
 			s.process(ctx, qname, sid, m)
 		}(msg.Queue, streamID, msg)
 	}
@@ -275,6 +300,63 @@ func (s *Server) process(ctx context.Context, qname, streamID string, msg *base.
 		s.logger.Error("chronos: retry scheduling failed", "id", msg.ID, "error", rerr)
 	}
 	s.observe(msg, OutcomeRetry, dur)
+}
+
+func (s *Server) trackInflight(id string, e inflightEntry) {
+	s.inflightMu.Lock()
+	s.inflight[id] = e
+	s.inflightMu.Unlock()
+}
+
+func (s *Server) untrackInflight(id string) {
+	s.inflightMu.Lock()
+	delete(s.inflight, id)
+	s.inflightMu.Unlock()
+}
+
+// heartbeaterLoop periodically refreshes the lease (PEL idle) and unique lock
+// TTL of every in-flight task, so a long-running task is not reclaimed by the
+// recoverer and does not lose its unique lock mid-processing.
+func (s *Server) heartbeaterLoop(ctx context.Context) {
+	defer s.wg.Done()
+	ticker := time.NewTicker(s.cfg.HeartbeatInterval)
+	defer ticker.Stop()
+	// Renew unique locks well past the recover window so a crash (heartbeat stops)
+	// lets the recoverer take over before the lock lapses.
+	renewTTL := 2 * s.cfg.RecoverMinIdle
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.beat(ctx, renewTTL)
+		}
+	}
+}
+
+// beat refreshes all currently in-flight tasks.
+func (s *Server) beat(ctx context.Context, renewTTL time.Duration) {
+	s.inflightMu.Lock()
+	byQueue := make(map[string][]string)
+	var uniqueKeys []string
+	for _, e := range s.inflight {
+		byQueue[e.queue] = append(byQueue[e.queue], e.streamID)
+		if e.uniqueKey != "" {
+			uniqueKeys = append(uniqueKeys, e.uniqueKey)
+		}
+	}
+	s.inflightMu.Unlock()
+
+	for q, ids := range byQueue {
+		if err := s.rdb.ExtendLease(ctx, q, s.consumer, ids); err != nil && ctx.Err() == nil {
+			s.logger.Error("chronos: extend lease failed", "queue", q, "error", err)
+		}
+	}
+	if len(uniqueKeys) > 0 {
+		if err := s.rdb.RenewUnique(ctx, uniqueKeys, renewTTL); err != nil && ctx.Err() == nil {
+			s.logger.Error("chronos: renew unique failed", "error", err)
+		}
+	}
 }
 
 // observe reports a task outcome to the configured Metrics (no-op if unset).
