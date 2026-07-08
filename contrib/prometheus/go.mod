@@ -1,6 +1,6 @@
 module github.com/kenshin579/chronos-go/contrib/prometheus
 
-go 1.26.4
+go 1.26
 
 replace github.com/kenshin579/chronos-go => ../../
 
