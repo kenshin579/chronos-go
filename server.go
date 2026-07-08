@@ -26,6 +26,10 @@ const (
 	recoverBatchSize = 100
 )
 
+// janitorBatchSize bounds how many age-expired archived tasks one janitor tick
+// removes per queue.
+const janitorBatchSize = 100
+
 // ackTimeout bounds the post-handler ack/retry/archive operations. These run on
 // a cancel-immune context (so they survive Shutdown), so a deadline is required
 // to keep a stalled Redis from blocking the worker — and thus Shutdown — forever.
@@ -79,6 +83,16 @@ type ServerConfig struct {
 	// lock of in-flight tasks. Defaults to RecoverMinIdle/3. Must be shorter than
 	// RecoverMinIdle so an actively-processing task is never reclaimed.
 	HeartbeatInterval time.Duration
+
+	// ArchivedRetention is how long a dead-lettered (archived) task is kept
+	// before the janitor deletes it. Defaults to 7 days (168h).
+	ArchivedRetention time.Duration
+	// MaxArchived caps the number of archived tasks per queue; the janitor
+	// deletes the oldest beyond this even within the retention window. Defaults
+	// to 10000. Set negative to disable the size cap.
+	MaxArchived int
+	// JanitorInterval is how often the janitor runs. Defaults to 1 minute.
+	JanitorInterval time.Duration
 }
 
 // Server fetches tasks from Redis and dispatches them to handlers.
@@ -137,6 +151,15 @@ func NewServer(r redis.UniversalClient, cfg ServerConfig) *Server {
 	if cfg.HeartbeatInterval < time.Millisecond {
 		cfg.HeartbeatInterval = time.Millisecond
 	}
+	if cfg.ArchivedRetention <= 0 {
+		cfg.ArchivedRetention = 7 * 24 * time.Hour
+	}
+	if cfg.MaxArchived == 0 {
+		cfg.MaxArchived = 10000
+	}
+	if cfg.JanitorInterval <= 0 {
+		cfg.JanitorInterval = 1 * time.Minute
+	}
 	return &Server{
 		rdb:      rdb.NewRDB(r),
 		cfg:      cfg,
@@ -184,6 +207,9 @@ func (s *Server) Start(ctx context.Context, mux *Mux) error {
 
 	s.wg.Add(1)
 	go s.heartbeaterLoop(runCtx)
+
+	s.wg.Add(1)
+	go s.janitorLoop(runCtx)
 	return nil
 }
 
@@ -462,6 +488,38 @@ func (s *Server) recovererLoop(ctx context.Context) {
 							&TaskInfo{ID: msg.ID, Kind: msg.Kind, Queue: msg.Queue},
 							errRecoveredExhausted)
 					}
+				}
+			}
+		}
+	}
+}
+
+// janitorLoop periodically deletes expired / over-capacity archived tasks from
+// each queue. Removals are atomic, batched, and idempotent, so running it on
+// every server instance is safe. A negative MaxArchived disables the size cap
+// (handled by TrimArchived).
+func (s *Server) janitorLoop(ctx context.Context) {
+	defer s.wg.Done()
+	ticker := time.NewTicker(s.cfg.JanitorInterval)
+	defer ticker.Stop()
+	queues := s.queueNames()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cutoff := time.Now().Add(-s.cfg.ArchivedRetention)
+			for _, q := range queues {
+				n, err := s.rdb.TrimArchived(ctx, q, cutoff, s.cfg.MaxArchived, janitorBatchSize)
+				if err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					s.logger.Error("chronos: janitor trim failed", "queue", q, "error", err)
+					continue
+				}
+				if n > 0 {
+					s.logger.Debug("chronos: janitor trimmed archived", "queue", q, "removed", n)
 				}
 			}
 		}
