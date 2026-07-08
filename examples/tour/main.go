@@ -54,6 +54,14 @@ type ReminderArgs struct {
 
 func (ReminderArgs) Kind() string { return "demo:reminder" }
 
+// LongArgs is a slow task used to demonstrate the heartbeat: it runs longer than
+// RecoverMinIdle, yet must execute exactly once.
+type LongArgs struct {
+	ID int `json:"id"`
+}
+
+func (LongArgs) Kind() string { return "demo:long" }
+
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
@@ -208,9 +216,80 @@ func main() {
 
 	shutdownSched(schedB)
 
+	section("8) retention/janitor (M5): dead-letter는 보관되되 TTL 후 자동 정리됨")
+	// A dedicated server with a short retention so cleanup is visible in seconds.
+	jmux := chronos.NewMux()
+	chronos.AddHandler(jmux, func(ctx context.Context, t *chronos.Task[PoisonArgs]) error {
+		return errors.New("항상 실패") // dead-letter immediately (MaxRetry 0 below)
+	})
+	jsrv := chronos.NewServer(rdb, chronos.ServerConfig{
+		Queues:            map[string]int{"janitor-demo": 1},
+		Concurrency:       4,
+		ArchivedRetention: 2 * time.Second,        // demo: expire archived after 2s
+		JanitorInterval:   500 * time.Millisecond, // clean often
+	})
+	if err := jsrv.Start(ctx, jmux); err != nil {
+		fmt.Printf("janitor 서버 start 실패: %v\n", err)
+	}
+	for i := 0; i < 5; i++ {
+		if _, err := chronos.Enqueue(ctx, client, PoisonArgs{ID: 100 + i}, chronos.WithQueue("janitor-demo"), chronos.WithMaxRetry(0)); err != nil {
+			fmt.Printf("enqueue 실패: %v\n", err)
+		}
+	}
+	time.Sleep(1 * time.Second) // let them dead-letter into archived
+	fmt.Printf("   5개 즉시 dead-letter → archived=%d (보관됨)\n", janitorDemoArchived(ctx, insp))
+	fmt.Println("   ... retention(2s) 경과 대기, janitor가 정리 ...")
+	time.Sleep(3 * time.Second)
+	fmt.Printf("   janitor 실행 후 → archived=%d (자동 정리됨)\n", janitorDemoArchived(ctx, insp))
+	shutSrvCtx, cancelJ := context.WithTimeout(context.Background(), 3*time.Second)
+	_ = jsrv.Shutdown(shutSrvCtx)
+	cancelJ()
+
+	section("9) heartbeat (M5): RecoverMinIdle보다 오래 걸리는 태스크도 정확히 1회 실행")
+	var longRuns atomic.Int32
+	hmux := chronos.NewMux()
+	chronos.AddHandler(hmux, func(ctx context.Context, t *chronos.Task[LongArgs]) error {
+		n := longRuns.Add(1)
+		fmt.Printf("   🫀 [long] 실행 #%d — 2초 처리(RecoverMinIdle 700ms 초과)\n", n)
+		time.Sleep(2 * time.Second)
+		return nil
+	})
+	hsrv := chronos.NewServer(rdb, chronos.ServerConfig{
+		Queues:            map[string]int{"hb-demo": 1},
+		Concurrency:       2,
+		RecoverMinIdle:    700 * time.Millisecond, // recoverer would reclaim a >700ms task...
+		RecoverInterval:   300 * time.Millisecond,
+		HeartbeatInterval: 200 * time.Millisecond, // ...but heartbeat keeps its lease fresh
+	})
+	if err := hsrv.Start(ctx, hmux); err != nil {
+		fmt.Printf("heartbeat 서버 start 실패: %v\n", err)
+	}
+	if _, err := chronos.Enqueue(ctx, client, LongArgs{ID: 1}, chronos.WithQueue("hb-demo")); err != nil {
+		fmt.Printf("enqueue 실패: %v\n", err)
+	}
+	time.Sleep(3 * time.Second) // > processing; recoverer had chances to (wrongly) duplicate
+	fmt.Printf("   → 총 실행 횟수: %d (heartbeat가 lease를 갱신해 recoverer 오회수 없음)\n", longRuns.Load())
+	shutHbCtx, cancelH := context.WithTimeout(context.Background(), 3*time.Second)
+	_ = hsrv.Shutdown(shutHbCtx)
+	cancelH()
+
 	fmt.Println("\n───────────────────────────────────────────────")
 	fmt.Println("투어 완료. 위 로그가 chronos-go가 실제로 동작하는 모습입니다.")
 	fmt.Println("Redis 내부 상태를 직접 보려면 docs/OBSERVING.md 를 참고하세요.")
+}
+
+// janitorDemoArchived returns the archived count for the janitor-demo queue.
+func janitorDemoArchived(ctx context.Context, insp *chronos.Inspector) int64 {
+	queues, err := insp.Queues(ctx)
+	if err != nil {
+		return -1
+	}
+	for _, q := range queues {
+		if q.Queue == "janitor-demo" {
+			return q.Archived
+		}
+	}
+	return 0
 }
 
 func section(title string) {
