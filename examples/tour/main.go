@@ -1,7 +1,10 @@
 // Command tour is a narrated, runnable walkthrough of everything chronos-go can
-// do so far (M1 core queue, M2 reliability, M3 delayed + unique). It is not a
-// test — it is meant to be *watched*: run it and read the output to see tasks
-// being enqueued, processed, retried, dead-lettered, delayed, and deduplicated.
+// do: the core queue, reliability (retry / dead-letter), delayed + unique tasks,
+// the Inspector, the distributed scheduler with leader failover, the retention
+// janitor, and the heartbeat. It is not a test — it is meant to be *watched*:
+// run it and read the output to see tasks being enqueued, processed, retried,
+// dead-lettered, delayed, deduplicated, scheduled across a leader hand-off,
+// auto-cleaned, and kept alive past RecoverMinIdle by the heartbeat.
 //
 //	go run ./examples/tour
 //
