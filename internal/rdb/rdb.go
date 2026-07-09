@@ -68,9 +68,12 @@ var ErrNoTask = errors.New("chronos: no task available")
 
 // EnsureGroup creates the consumer group on a queue's stream if it does not
 // already exist. MKSTREAM creates the stream too, so this is safe to call
-// before any task has been enqueued.
+// before any task has been enqueued. The group starts at "0" (the beginning of
+// the stream), not "$": tasks enqueued before the first server starts must
+// still be delivered — with "$" they would be invisible to XREADGROUP forever.
+// Already-acked entries are XDEL'd, so starting at "0" never replays old work.
 func (r *RDB) EnsureGroup(ctx context.Context, qname string) error {
-	err := r.client.XGroupCreateMkStream(ctx, base.StreamKey(qname), ConsumerGroup, "$").Err()
+	err := r.client.XGroupCreateMkStream(ctx, base.StreamKey(qname), ConsumerGroup, "0").Err()
 	if err != nil && !strings.HasPrefix(err.Error(), "BUSYGROUP") {
 		return err
 	}

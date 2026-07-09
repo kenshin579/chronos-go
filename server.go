@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -41,9 +42,17 @@ var errRecoveredExhausted = errors.New("chronos: retries exhausted after recover
 
 // ServerConfig configures a Server.
 type ServerConfig struct {
-	// Queues maps queue name to weight. Only the keys are used today (all queues
-	// are read equally); weighted priority is a later enhancement.
+	// Queues maps queue name to weight. While every queue has work, a queue with
+	// weight 6 is dequeued about 6x as often as a queue with weight 1 (smooth
+	// weighted round-robin — no queue starves). When the queue picked for a round
+	// is empty, that round falls through to the highest-weight queue that does
+	// have work, so an idle high-priority queue never blocks lower ones. Weights
+	// <= 0 are treated as 1; very large weights are capped.
 	Queues map[string]int
+	// StrictPriority, if true, always drains higher-weight queues first: a
+	// lower-weight queue is served only while every higher-weight queue is
+	// empty. Ties are broken by queue name for determinism.
+	StrictPriority bool
 	// Concurrency is the max number of tasks processed simultaneously.
 	Concurrency int
 	// Logger receives operational logs. Defaults to slog.Default().
@@ -179,6 +188,23 @@ func (s *Server) queueNames() []string {
 	return names
 }
 
+// queuesByWeight returns the queue names ordered by weight descending (ties by
+// name ascending, so the order is deterministic). Weights <= 0 count as 1.
+func (s *Server) queuesByWeight() []string {
+	names := s.queueNames()
+	weight := func(q string) int {
+		return normalizeWeight(s.cfg.Queues[q])
+	}
+	sort.Slice(names, func(i, j int) bool {
+		wi, wj := weight(names[i]), weight(names[j])
+		if wi != wj {
+			return wi > wj
+		}
+		return names[i] < names[j]
+	})
+	return names
+}
+
 // Start ensures consumer groups exist and launches the fetch loop. It returns
 // once startup is complete; processing continues in the background until
 // Shutdown is called or ctx is cancelled.
@@ -215,10 +241,18 @@ func (s *Server) Start(ctx context.Context, mux *Mux) error {
 
 // fetchLoop repeatedly dequeues tasks and hands them to worker goroutines,
 // bounded by the concurrency semaphore.
+//
+// Queue selection: StrictPriority always sweeps queues by weight descending, so
+// a lower-weight queue is served only while every higher one is empty. The
+// default (weighted) mode picks each round's first queue via smooth weighted
+// round-robin — under load every queue is dequeued in proportion to its weight
+// and none starves — then falls back to the remaining queues by weight so a
+// worker never idles while any queue has work.
 func (s *Server) fetchLoop(ctx context.Context) {
 	defer s.wg.Done()
-	queues := s.queueNames()
-	idx := 0
+	byWeight := s.queuesByWeight()
+	picker := newWRRPicker(s.cfg.Queues)
+	order := make([]string, 0, len(byWeight))
 	for {
 		select {
 		case <-ctx.Done():
@@ -232,14 +266,28 @@ func (s *Server) fetchLoop(ctx context.Context) {
 			return
 		}
 
+		// 이번 라운드의 조회 순서를 결정한다.
+		order = order[:0]
+		if s.cfg.StrictPriority {
+			order = append(order, byWeight...)
+		} else {
+			primary := picker.pick()
+			order = append(order, primary)
+			for _, q := range byWeight {
+				if q != primary {
+					order = append(order, q)
+				}
+			}
+		}
+
 		var (
 			msg      *base.TaskMessage
 			streamID string
 			found    bool
 		)
 
-		// 1) 구성된 큐를 순회하며 논블로킹 조회 (우선순위 가중치는 M2).
-		for _, q := range queues {
+		// 1) 우선순위 순서대로 논블로킹 조회.
+		for _, q := range order {
 			m, sid, err := s.rdb.Dequeue(ctx, s.consumer, -1, q)
 			if err == rdb.ErrNoTask {
 				continue
@@ -256,14 +304,17 @@ func (s *Server) fetchLoop(ctx context.Context) {
 			break
 		}
 
-		// 2) 아무것도 없으면 라운드로빈으로 한 큐에 블로킹(응답성 유지, 기아 방지).
+		// 2) 모두 비었으면 이번 라운드의 첫 큐에 블로킹(응답성 유지). weighted에선
+		// SWRR가 라운드마다 다른 큐를 뽑으므로 블로킹 감시도 가중치대로 분배된다.
 		if !found {
-			if len(queues) == 0 {
+			// order[0] should never be empty (Start rejects an empty Queues, so
+			// the picker and byWeight are non-empty), but guard so a stray ""
+			// can't turn into a busy-loop blocking on a nonexistent stream.
+			if len(order) == 0 || order[0] == "" {
 				<-s.sem
 				return
 			}
-			q := queues[idx%len(queues)]
-			idx++
+			q := order[0]
 			m, sid, err := s.rdb.Dequeue(ctx, s.consumer, pollBlock, q)
 			if err == rdb.ErrNoTask {
 				<-s.sem
