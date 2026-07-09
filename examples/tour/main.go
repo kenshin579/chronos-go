@@ -1,7 +1,8 @@
 // Command tour is a narrated, runnable walkthrough of everything chronos-go can
 // do: the core queue, reliability (retry / dead-letter), delayed + unique tasks,
 // the Inspector, the distributed scheduler with leader failover, the retention
-// janitor, and the heartbeat. It is not a test — it is meant to be *watched*:
+// janitor, the heartbeat, and weighted priority queues. It is not a test — it
+// is meant to be *watched*:
 // run it and read the output to see tasks being enqueued, processed, retried,
 // dead-lettered, delayed, deduplicated, scheduled across a leader hand-off,
 // auto-cleaned, and kept alive past RecoverMinIdle by the heartbeat.
@@ -64,6 +65,14 @@ type LongArgs struct {
 }
 
 func (LongArgs) Kind() string { return "demo:long" }
+
+// PrioArgs carries its queue name so the priority demo can print, in processing
+// order, which queue each task came from.
+type PrioArgs struct {
+	Queue string `json:"queue"`
+}
+
+func (PrioArgs) Kind() string { return "demo:prio" }
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
@@ -275,6 +284,53 @@ func main() {
 	shutHbCtx, cancelH := context.WithTimeout(context.Background(), 3*time.Second)
 	_ = hsrv.Shutdown(shutHbCtx)
 	cancelH()
+
+	section("10) 우선순위 큐: 가중치 비율로 dequeue (critical:4 vs low:1)")
+	// critical 8개 + low 4개를 먼저 쌓아두고 Concurrency 1로 처리해 순서를 관찰한다.
+	// 두 큐 모두 일감이 있는 동안 critical이 4배 자주 나오고, low도 굶지 않는다.
+	for i := 0; i < 8; i++ {
+		if _, err := chronos.Enqueue(ctx, client, PrioArgs{Queue: "critical"}, chronos.WithQueue("critical")); err != nil {
+			fmt.Printf("enqueue 실패: %v\n", err)
+		}
+	}
+	for i := 0; i < 4; i++ {
+		if _, err := chronos.Enqueue(ctx, client, PrioArgs{Queue: "low"}, chronos.WithQueue("low")); err != nil {
+			fmt.Printf("enqueue 실패: %v\n", err)
+		}
+	}
+	prioOrder := make(chan string, 12)
+	pmux := chronos.NewMux()
+	chronos.AddHandler(pmux, func(ctx context.Context, t *chronos.Task[PrioArgs]) error {
+		prioOrder <- t.Args.Queue
+		return nil
+	})
+	psrv := chronos.NewServer(rdb, chronos.ServerConfig{
+		Queues:      map[string]int{"critical": 4, "low": 1},
+		Concurrency: 1, // 순차 처리라 dequeue 순서가 그대로 보인다
+	})
+	if err := psrv.Start(ctx, pmux); err != nil {
+		fmt.Printf("priority 서버 start 실패: %v\n", err)
+	}
+	fmt.Print("   처리 순서: ")
+	for i := 0; i < 12; i++ {
+		select {
+		case q := <-prioOrder:
+			if q == "critical" {
+				fmt.Print("🔴")
+			} else {
+				fmt.Print("🔵")
+			}
+		case <-time.After(10 * time.Second):
+			fmt.Print(" (시간 초과)")
+			i = 12
+		}
+	}
+	fmt.Println("  (🔴=critical 🔵=low)")
+	fmt.Println("   → 🔴가 4:1로 자주 나오되 🔵도 사이사이 처리됨 (smooth weighted round-robin).")
+	fmt.Println("   → StrictPriority: true로 바꾸면 🔴 8개가 전부 끝난 뒤에야 🔵이 시작된다.")
+	shutPrioCtx, cancelP := context.WithTimeout(context.Background(), 3*time.Second)
+	_ = psrv.Shutdown(shutPrioCtx)
+	cancelP()
 
 	fmt.Println("\n───────────────────────────────────────────────")
 	fmt.Println("투어 완료. 위 로그가 chronos-go가 실제로 동작하는 모습입니다.")

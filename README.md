@@ -31,6 +31,9 @@ long processing.
   fences duplicates during leader hand-off.
 - **Delayed execution & de-duplication** — `WithProcessIn` / `WithProcessAt`,
   and `WithUnique` to collapse duplicate work.
+- **Weighted priority queues** — queue weights are honored via smooth weighted
+  round-robin (no starvation), or set `StrictPriority` to always drain
+  higher-weight queues first.
 - **Heartbeat** — refreshes the lease and unique lock of in-flight tasks, so a
   long-running task is neither reclaimed nor loses its lock mid-processing.
 - **Self-cleaning** — a janitor trims dead-lettered tasks by age and count, so
@@ -127,6 +130,29 @@ chronos.Enqueue(ctx, client, EmailArgs{...},
 
 Set an `OnDeadLetter` hook on `ServerConfig` to alert on / inspect exhausted tasks.
 
+## Queue priority
+
+`ServerConfig.Queues` maps queue name → weight. While every queue has work, a
+queue with weight 6 is dequeued about 6× as often as a queue with weight 1
+(smooth weighted round-robin — lower-weight queues never starve). When the
+queue chosen for a round is empty, that round falls through to the
+highest-weight queue that does have work, so an idle high-priority queue never
+holds up lower ones. Weights `<= 0` are treated as `1`.
+
+```go
+srv := chronos.NewServer(rdb, chronos.ServerConfig{
+	Queues: map[string]int{
+		"critical": 6,
+		"default":  3,
+		"low":      1,
+	},
+	// StrictPriority: true, // always drain critical first, then default, then low
+})
+```
+
+With `StrictPriority: true`, higher-weight queues are always drained first; a
+lower-weight queue runs only while every higher one is empty.
+
 ## Scheduling (interval & cron)
 
 Register periodic jobs on a `Scheduler`. Every instance may call `Start`; only
@@ -176,7 +202,9 @@ See [`docs/OBSERVING.md`](docs/OBSERVING.md) for Redis-level inspection.
 ## How it works
 
 - **Immediate queue**: a Redis Stream per queue with one consumer group. Workers
-  `XREADGROUP` (blocking), run the handler, then `XACK` + `XDEL`.
+  `XREADGROUP` (blocking), run the handler, then `XACK` + `XDEL`. Queues are
+  selected by smooth weighted round-robin (or strictly by weight with
+  `StrictPriority`).
 - **Delayed / retry / archived**: sorted sets scored by run-at / retry-at /
   died-at; a forwarder promotes due entries back into the stream.
 - **Crash recovery**: a recoverer `XAUTOCLAIM`s entries whose worker went silent
@@ -206,8 +234,6 @@ crashes after finishing but before acking). **Make handlers idempotent.**
 
 ## Known limitations / roadmap
 
-- Weighted/strict queue **priority** is not implemented yet (queues are read
-  round-robin).
 - Scheduler fencing relies on a dedup-key TTL (no monotonic fencing token); a
   leader paused longer than the TTL could theoretically re-enqueue a trigger.
   All instances must share the same `Location` and reasonably synced clocks.

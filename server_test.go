@@ -58,6 +58,39 @@ func TestServer_ProcessesEnqueuedTask(t *testing.T) {
 	}
 }
 
+// Regression: a task enqueued BEFORE the first server ever starts (so before
+// the consumer group exists) must still be delivered. With the group created
+// at "$" instead of "0", such tasks were invisible to XREADGROUP forever.
+func TestServer_ProcessesTaskEnqueuedBeforeStart(t *testing.T) {
+	client := testutil.NewRedis(t)
+	c := NewClient(client)
+	defer c.Close()
+	ctx := context.Background()
+
+	// Enqueue first — no server has run, so the stream exists but no group.
+	if _, err := Enqueue(ctx, c, emailArgs{UserID: "early"}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	done := make(chan struct{})
+	mux := NewMux()
+	AddHandler(mux, func(ctx context.Context, task *Task[emailArgs]) error {
+		close(done)
+		return nil
+	})
+	srv := NewServer(client, ServerConfig{Queues: map[string]int{"default": 1}, Concurrency: 1})
+	if err := srv.Start(ctx, mux); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("task enqueued before server start was never processed")
+	}
+}
+
 func TestServer_ShutdownIsClean(t *testing.T) {
 	client := testutil.NewRedis(t)
 	srv := NewServer(client, ServerConfig{Queues: map[string]int{"default": 1}, Concurrency: 2})
