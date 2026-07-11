@@ -2,13 +2,18 @@ package webui
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 
 	"github.com/kenshin579/chronos-go"
 )
 
 const listLimit = 100
+
+// ctx aliases context.Context to keep the action func signature readable.
+type ctx = context.Context
 
 func (s *server) dashboard(w http.ResponseWriter, r *http.Request) {
 	queues, err := s.insp.Queues(r.Context())
@@ -80,5 +85,21 @@ func formatPayload(p []byte) string {
 	return string(p)
 }
 
-func (s *server) runTask(w http.ResponseWriter, r *http.Request)    { http.Error(w, "todo", 501) }
-func (s *server) deleteTask(w http.ResponseWriter, r *http.Request) { http.Error(w, "todo", 501) }
+func (s *server) runTask(w http.ResponseWriter, r *http.Request) {
+	s.action(w, r, s.insp.RunTask, "queued for immediate run")
+}
+
+func (s *server) deleteTask(w http.ResponseWriter, r *http.Request) {
+	s.action(w, r, s.insp.DeleteTask, "deleted")
+}
+
+// action runs a mutating Inspector call then redirects (PRG) back to the queue.
+func (s *server) action(w http.ResponseWriter, r *http.Request, fn func(ctx, string, string) error, okMsg string) {
+	queue := r.PathValue("queue")
+	id := r.PathValue("id")
+	msg := okMsg
+	if err := fn(r.Context(), queue, id); err != nil {
+		msg = "error: " + err.Error()
+	}
+	http.Redirect(w, r, "/queues/"+queue+"?msg="+url.QueryEscape(msg), http.StatusSeeOther)
+}

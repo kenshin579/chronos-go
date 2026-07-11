@@ -171,3 +171,72 @@ func TestQueueDetail_ListsScheduledTask(t *testing.T) {
 		t.Errorf("queue detail missing task id %q:\n%s", id, body)
 	}
 }
+
+func TestRunTask_RedirectsAndPromotes(t *testing.T) {
+	client := newTestRedis(t)
+	id := seedScheduled(t, client)
+	insp := chronos.NewInspector(client)
+
+	srv := httptest.NewServer(Handler(insp))
+	defer srv.Close()
+
+	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	resp, err := noRedirect.Post(srv.URL+"/queues/default/tasks/"+id+"/run", "", nil)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", resp.StatusCode)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		tasks, _ := insp.ListTasks(context.Background(), "default", "scheduled", 10)
+		if len(tasks) == 0 {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Error("task still in scheduled after run")
+}
+
+func TestDeleteTask_RemovesTask(t *testing.T) {
+	client := newTestRedis(t)
+	id := seedScheduled(t, client)
+	insp := chronos.NewInspector(client)
+
+	srv := httptest.NewServer(Handler(insp))
+	defer srv.Close()
+
+	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	resp, err := noRedirect.Post(srv.URL+"/queues/default/tasks/"+id+"/delete", "", nil)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", resp.StatusCode)
+	}
+	if _, err := insp.GetTask(context.Background(), "default", id); err == nil {
+		t.Error("task still present after delete")
+	}
+}
+
+func TestRunTask_RejectsGet(t *testing.T) {
+	client := newTestRedis(t)
+	srv := httptest.NewServer(Handler(chronos.NewInspector(client)))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/queues/default/tasks/x/run")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405", resp.StatusCode)
+	}
+}
