@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
 	"github.com/kenshin579/chronos-go/internal/base"
 	"github.com/kenshin579/chronos-go/internal/testutil"
 )
@@ -56,8 +58,37 @@ func TestListZSetTasks_ReturnsMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(tasks) != 1 || tasks[0].ID != "s1" {
+	if len(tasks) != 1 || tasks[0].Msg.ID != "s1" {
 		t.Fatalf("tasks = %+v, want 1 with id s1", tasks)
+	}
+}
+
+func TestListZSetTasks_ReturnsScores(t *testing.T) {
+	client := testutil.NewRedis(t)
+	r := NewRDB(client)
+	ctx := context.Background()
+
+	msg := &base.TaskMessage{ID: "s1", Kind: "k", Queue: "default", State: base.StateScheduled}
+	encoded, _ := base.EncodeMessage(msg)
+	if err := client.HSet(ctx, base.TaskKey("default", "s1"), "msg", encoded, "state", int(base.StateScheduled)).Err(); err != nil {
+		t.Fatalf("hset: %v", err)
+	}
+	if err := client.ZAdd(ctx, base.ScheduledKey("default"), redis.Z{Score: 12345, Member: "s1"}).Err(); err != nil {
+		t.Fatalf("zadd: %v", err)
+	}
+
+	got, err := r.ListZSetTasks(ctx, "default", base.ScheduledKey("default"), 10)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1", len(got))
+	}
+	if got[0].Msg.ID != "s1" {
+		t.Errorf("ID = %q, want s1", got[0].Msg.ID)
+	}
+	if got[0].Score != 12345 {
+		t.Errorf("Score = %v, want 12345", got[0].Score)
 	}
 }
 

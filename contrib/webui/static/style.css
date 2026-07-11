@@ -1,0 +1,9 @@
+body{font-family:system-ui,sans-serif;margin:2rem;color:#222}
+header a{font-weight:bold;text-decoration:none;color:#0645ad}
+table{border-collapse:collapse;margin-top:1rem}
+th,td{border:1px solid #ccc;padding:.3rem .6rem;text-align:left}
+nav.states a.active{font-weight:bold;text-decoration:underline}
+pre{background:#f4f4f4;padding:1rem;overflow:auto}
+.err{color:#a00;white-space:pre-wrap}
+.msg{background:#efe;border:1px solid #7c7;padding:.4rem}
+button.danger{color:#a00}

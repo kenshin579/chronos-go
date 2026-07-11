@@ -2,6 +2,7 @@ package chronos
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -52,5 +53,71 @@ func TestInspector_ListTasks_RejectsUnknownState(t *testing.T) {
 	insp := NewInspector(client)
 	if _, err := insp.ListTasks(context.Background(), "default", "bogus", 10); err == nil {
 		t.Error("expected error for unknown state")
+	}
+}
+
+func TestInspector_ListTasks_RichFields(t *testing.T) {
+	client := testutil.NewRedis(t)
+	c := NewClient(client)
+	defer c.Close()
+	ctx := context.Background()
+
+	if _, err := Enqueue(ctx, c, emailArgs{UserID: "u1"}, WithProcessIn(time.Hour)); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	insp := NewInspector(client)
+	got, err := insp.ListTasks(ctx, "default", "scheduled", 10)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1", len(got))
+	}
+	ti := got[0]
+	if ti.State != "scheduled" {
+		t.Errorf("State = %q, want scheduled", ti.State)
+	}
+	if len(ti.Payload) == 0 {
+		t.Error("Payload empty, want non-empty")
+	}
+	if ti.NextProcessAt.IsZero() {
+		t.Error("NextProcessAt is zero, want the scheduled time")
+	}
+}
+
+func TestInspector_GetTask_ReturnsDetailAndNotFound(t *testing.T) {
+	client := testutil.NewRedis(t)
+	c := NewClient(client)
+	defer c.Close()
+	ctx := context.Background()
+
+	info, err := Enqueue(ctx, c, emailArgs{UserID: "u9"}, WithProcessIn(time.Hour))
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	insp := NewInspector(client)
+
+	got, err := insp.GetTask(ctx, "default", info.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.ID != info.ID {
+		t.Errorf("ID = %q, want %q", got.ID, info.ID)
+	}
+	if got.State != "scheduled" || got.NextProcessAt.IsZero() {
+		t.Errorf("state/time wrong: %+v", got)
+	}
+
+	if _, err := insp.GetTask(ctx, "default", "does-not-exist"); err == nil {
+		t.Error("GetTask for missing id: want error, got nil")
+	}
+}
+
+func TestInspector_GetTask_NotFoundIsSentinel(t *testing.T) {
+	client := testutil.NewRedis(t)
+	insp := NewInspector(client)
+	_, err := insp.GetTask(context.Background(), "default", "nope")
+	if !errors.Is(err, ErrTaskNotFound) {
+		t.Errorf("err = %v, want ErrTaskNotFound", err)
 	}
 }

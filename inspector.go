@@ -2,12 +2,21 @@ package chronos
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 
 	"github.com/kenshin579/chronos-go/internal/base"
 	"github.com/kenshin579/chronos-go/internal/rdb"
+)
+
+// Errors returned by the Inspector, exposed so callers (e.g. the web console)
+// can map them to the right response.
+var (
+	ErrTaskNotFound = errors.New("chronos: task not found")
+	ErrInvalidState = errors.New("chronos: invalid task state")
 )
 
 // Inspector provides read and administrative access to queues and tasks. It is
@@ -61,7 +70,7 @@ func zsetKeyForState(qname, state string) (string, error) {
 	case "archived":
 		return base.ArchivedKey(qname), nil
 	default:
-		return "", fmt.Errorf("chronos: unknown task state %q (want scheduled|retry|archived)", state)
+		return "", fmt.Errorf("%w %q (want scheduled|retry|archived)", ErrInvalidState, state)
 	}
 }
 
@@ -71,15 +80,49 @@ func (i *Inspector) ListTasks(ctx context.Context, qname, state string, limit in
 	if err != nil {
 		return nil, err
 	}
-	msgs, err := i.rdb.ListZSetTasks(ctx, qname, zsetKey, limit)
+	entries, err := i.rdb.ListZSetTasks(ctx, qname, zsetKey, limit)
 	if err != nil {
 		return nil, err
 	}
-	infos := make([]*TaskInfo, 0, len(msgs))
-	for _, m := range msgs {
-		infos = append(infos, &TaskInfo{ID: m.ID, Kind: m.Kind, Queue: m.Queue})
+	infos := make([]*TaskInfo, 0, len(entries))
+	for _, e := range entries {
+		ti := taskInfoFromMsg(e.Msg)
+		ti.NextProcessAt = time.Unix(int64(e.Score), 0)
+		infos = append(infos, ti)
 	}
 	return infos, nil
+}
+
+// GetTask returns full detail for a single stored task (scheduled/retry/archived).
+func (i *Inspector) GetTask(ctx context.Context, qname, taskID string) (*TaskInfo, error) {
+	msg, err := i.rdb.GetTask(ctx, qname, taskID)
+	if err == redis.Nil {
+		return nil, fmt.Errorf("%w: %q in queue %q", ErrTaskNotFound, taskID, qname)
+	}
+	if err != nil {
+		return nil, err
+	}
+	ti := taskInfoFromMsg(msg)
+	if zsetKey, kerr := zsetKeyForState(qname, ti.State); kerr == nil {
+		if score, ok, serr := i.rdb.ZScore(ctx, zsetKey, taskID); serr == nil && ok {
+			ti.NextProcessAt = time.Unix(int64(score), 0)
+		}
+	}
+	return ti, nil
+}
+
+// taskInfoFromMsg maps the stored message to the public TaskInfo (no timestamp).
+func taskInfoFromMsg(m *base.TaskMessage) *TaskInfo {
+	return &TaskInfo{
+		ID:       m.ID,
+		Kind:     m.Kind,
+		Queue:    m.Queue,
+		State:    m.State.String(),
+		Payload:  m.Payload,
+		Retried:  m.Retried,
+		MaxRetry: m.MaxRetry,
+		LastErr:  m.LastErr,
+	}
 }
 
 // RunTask promotes a scheduled/retry/archived task so it runs immediately.

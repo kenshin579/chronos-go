@@ -54,6 +54,10 @@ type TaskMessage struct {
 	// if the task is not unique. It is released when the task reaches a terminal
 	// state (completed / archived / discarded).
 	UniqueKey string `json:"unique_key"`
+	// LastErr is the error message from the most recent failed attempt. It is
+	// persisted so the Inspector and Web UI can show why a task was retried or
+	// dead-lettered. Empty until the first failure.
+	LastErr string `json:"last_err,omitempty"`
 }
 
 // EncodeMessage serializes a TaskMessage for storage in Redis.

@@ -71,3 +71,18 @@ func TestTaskState_String(t *testing.T) {
 		t.Errorf("StateActive.String() = %q, want %q", StateActive.String(), "active")
 	}
 }
+
+func TestTaskMessage_LastErrRoundTrips(t *testing.T) {
+	msg := &TaskMessage{ID: "t1", Kind: "k", Queue: "default", LastErr: "boom: timeout"}
+	encoded, err := EncodeMessage(msg)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	got, err := DecodeMessage(encoded)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.LastErr != "boom: timeout" {
+		t.Errorf("LastErr = %q, want %q", got.LastErr, "boom: timeout")
+	}
+}

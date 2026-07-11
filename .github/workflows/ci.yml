@@ -40,3 +40,6 @@ jobs:
 
       - name: Test (contrib/prometheus)
         run: cd contrib/prometheus && go test ./... -race
+
+      - name: Test (contrib/webui)
+        run: cd contrib/webui && go test ./... -race
