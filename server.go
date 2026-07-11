@@ -383,6 +383,7 @@ func (s *Server) process(ctx context.Context, qname, streamID string, msg *base.
 	}
 
 	msg.Retried++
+	msg.LastErr = err.Error()
 	retryAt := time.Now().Add(s.cfg.RetryDelayFunc(msg.Retried, err))
 	if rerr := s.rdb.Retry(opCtx, qname, streamID, msg, retryAt); rerr != nil {
 		s.logger.Error("chronos: retry scheduling failed", "id", msg.ID, "error", rerr)
@@ -470,6 +471,7 @@ func (s *Server) dispatchSafely(ctx context.Context, msg *base.TaskMessage) (err
 // deadLetter archives the task (or discards it when NoArchive is set) and fires
 // the OnDeadLetter hook.
 func (s *Server) deadLetter(ctx context.Context, qname, streamID string, msg *base.TaskMessage, cause error) {
+	msg.LastErr = cause.Error()
 	if msg.NoArchive {
 		if derr := s.rdb.Done(ctx, qname, streamID, msg); derr != nil {
 			s.logger.Error("chronos: discard failed", "id", msg.ID, "error", derr)
