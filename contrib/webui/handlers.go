@@ -1,6 +1,8 @@
 package webui
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
 
 	"github.com/kenshin579/chronos-go"
@@ -47,6 +49,36 @@ func (s *server) queueDetail(w http.ResponseWriter, r *http.Request) {
 		Msg:    r.URL.Query().Get("msg"),
 	})
 }
-func (s *server) taskDetail(w http.ResponseWriter, r *http.Request) { http.Error(w, "todo", 501) }
+func (s *server) taskDetail(w http.ResponseWriter, r *http.Request) {
+	queue := r.PathValue("queue")
+	id := r.PathValue("id")
+	task, err := s.insp.GetTask(r.Context(), queue, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	render(w, "task", struct {
+		Title   string
+		Task    *chronos.TaskInfo
+		Payload string
+	}{
+		Title:   id,
+		Task:    task,
+		Payload: formatPayload(task.Payload),
+	})
+}
+
+// formatPayload renders a payload for display: pretty-printed JSON when it
+// parses, otherwise the raw string.
+func formatPayload(p []byte) string {
+	var buf bytes.Buffer
+	if json.Valid(p) {
+		if err := json.Indent(&buf, p, "", "  "); err == nil {
+			return buf.String()
+		}
+	}
+	return string(p)
+}
+
 func (s *server) runTask(w http.ResponseWriter, r *http.Request)    { http.Error(w, "todo", 501) }
 func (s *server) deleteTask(w http.ResponseWriter, r *http.Request) { http.Error(w, "todo", 501) }

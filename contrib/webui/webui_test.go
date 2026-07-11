@@ -2,6 +2,7 @@ package webui
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -84,6 +85,70 @@ func readBody(t *testing.T, resp *http.Response) string {
 		t.Fatalf("read body: %v", err)
 	}
 	return string(b)
+}
+
+var errDemo = errors.New("demo failure")
+
+// seedDeadLetter runs a failing handler once so the task is archived with a
+// LastErr, and returns its task ID.
+func seedDeadLetter(t *testing.T, client redis.UniversalClient) string {
+	t.Helper()
+	c := chronos.NewClient(client)
+	defer c.Close()
+	ctx := context.Background()
+
+	mux := chronos.NewMux()
+	chronos.AddHandler(mux, func(ctx context.Context, task *chronos.Task[demoArgs]) error {
+		return errDemo
+	})
+	srv := chronos.NewServer(client, chronos.ServerConfig{
+		Queues:      map[string]int{"default": 1},
+		Concurrency: 1,
+	})
+	if err := srv.Start(ctx, mux); err != nil {
+		t.Fatalf("server start: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	info, err := chronos.Enqueue(ctx, c, demoArgs{Msg: "boom"}, chronos.WithMaxRetry(0))
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	insp := chronos.NewInspector(client)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		got, gerr := insp.GetTask(ctx, "default", info.ID)
+		if gerr == nil && got.State == "archived" {
+			return info.ID
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("task did not reach archived state in time")
+	return ""
+}
+
+func TestTaskDetail_ShowsPayloadAndError(t *testing.T) {
+	client := newTestRedis(t)
+	id := seedDeadLetter(t, client)
+
+	srv := httptest.NewServer(Handler(chronos.NewInspector(client)))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/queues/default/tasks/" + id)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	body := readBody(t, resp)
+	if !strings.Contains(body, "demo failure") {
+		t.Errorf("task detail missing LastErr:\n%s", body)
+	}
+	if !strings.Contains(body, "boom") {
+		t.Errorf("task detail missing payload:\n%s", body)
+	}
 }
 
 func TestQueueDetail_ListsScheduledTask(t *testing.T) {
