@@ -131,3 +131,46 @@ func TestTrimArchived_NegativeMaxSizeDisablesCap(t *testing.T) {
 		t.Errorf("archived = %d, want 3 (untouched)", card)
 	}
 }
+
+func TestTrimCompleted_RemovesExpiredAndOverCap(t *testing.T) {
+	client := testutil.NewRedis(t)
+	r := NewRDB(client)
+	ctx := context.Background()
+	now := time.Now()
+
+	// 만료 2개(score 과거), 유효 3개(score 미래).
+	seed := func(id string, expireAt time.Time) {
+		msg := &base.TaskMessage{ID: id, Kind: "k", Queue: "default", State: base.StateCompleted}
+		encoded, _ := base.EncodeMessage(msg)
+		client.HSet(ctx, base.TaskKey("default", id), "msg", encoded, "state", int(base.StateCompleted))
+		client.ZAdd(ctx, base.CompletedKey("default"), redis.Z{Score: float64(expireAt.Unix()), Member: id})
+	}
+	seed("e1", now.Add(-time.Hour))
+	seed("e2", now.Add(-time.Minute))
+	seed("v1", now.Add(time.Hour))
+	seed("v2", now.Add(2*time.Hour))
+	seed("v3", now.Add(3*time.Hour))
+
+	// (1) 만료분 정리: cutoff = now → e1, e2 삭제.
+	n, err := r.TrimCompleted(ctx, "default", now, -1, 100)
+	if err != nil {
+		t.Fatalf("trim: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("removed = %d, want 2", n)
+	}
+	// (2) 크기 상한: maxSize 1 → 오래된 v1, v2 삭제, v3만 잔존.
+	n, err = r.TrimCompleted(ctx, "default", now, 1, 100)
+	if err != nil {
+		t.Fatalf("trim cap: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("cap removed = %d, want 2", n)
+	}
+	if card, _ := client.ZCard(ctx, base.CompletedKey("default")).Result(); card != 1 {
+		t.Errorf("remaining = %d, want 1", card)
+	}
+	if _, err := r.GetTask(ctx, "default", "v1"); err != redis.Nil {
+		t.Errorf("v1 hash should be gone, err=%v", err)
+	}
+}
