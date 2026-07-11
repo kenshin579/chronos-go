@@ -5,7 +5,7 @@
 <dt>Kind</dt><dd>{{.Task.Kind}}</dd>
 <dt>State</dt><dd>{{.Task.State}}</dd>
 <dt>Retried</dt><dd>{{.Task.Retried}} / {{.Task.MaxRetry}}</dd>
-<dt>When</dt><dd>{{.Task.NextProcessAt.Format "2006-01-02 15:04:05"}}</dd>
+<dt>When</dt><dd>{{if not .Task.NextProcessAt.IsZero}}{{.Task.NextProcessAt.Format "2006-01-02 15:04:05"}}{{else}}—{{end}}</dd>
 <dt>Last error</dt><dd class="err">{{if .Task.LastErr}}{{.Task.LastErr}}{{else}}(none){{end}}</dd>
 </dl>
 <h2>Payload</h2>

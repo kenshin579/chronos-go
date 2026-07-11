@@ -2,6 +2,7 @@ package chronos
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -9,6 +10,13 @@ import (
 
 	"github.com/kenshin579/chronos-go/internal/base"
 	"github.com/kenshin579/chronos-go/internal/rdb"
+)
+
+// Errors returned by the Inspector, exposed so callers (e.g. the web console)
+// can map them to the right response.
+var (
+	ErrTaskNotFound = errors.New("chronos: task not found")
+	ErrInvalidState = errors.New("chronos: invalid task state")
 )
 
 // Inspector provides read and administrative access to queues and tasks. It is
@@ -62,7 +70,7 @@ func zsetKeyForState(qname, state string) (string, error) {
 	case "archived":
 		return base.ArchivedKey(qname), nil
 	default:
-		return "", fmt.Errorf("chronos: unknown task state %q (want scheduled|retry|archived)", state)
+		return "", fmt.Errorf("%w %q (want scheduled|retry|archived)", ErrInvalidState, state)
 	}
 }
 
@@ -89,7 +97,7 @@ func (i *Inspector) ListTasks(ctx context.Context, qname, state string, limit in
 func (i *Inspector) GetTask(ctx context.Context, qname, taskID string) (*TaskInfo, error) {
 	msg, err := i.rdb.GetTask(ctx, qname, taskID)
 	if err == redis.Nil {
-		return nil, fmt.Errorf("chronos: task %q not found in queue %q", taskID, qname)
+		return nil, fmt.Errorf("%w: %q in queue %q", ErrTaskNotFound, taskID, qname)
 	}
 	if err != nil {
 		return nil, err

@@ -10,7 +10,7 @@
 <tr>
 <td><a href="/queues/{{$.Queue}}/tasks/{{.ID}}">{{.ID}}</a></td>
 <td>{{.Kind}}</td>
-<td>{{.NextProcessAt.Format "2006-01-02 15:04:05"}}</td>
+<td>{{if not .NextProcessAt.IsZero}}{{.NextProcessAt.Format "2006-01-02 15:04:05"}}{{else}}—{{end}}</td>
 </tr>
 {{else}}
 <tr><td colspan="3">no tasks in this state</td></tr>

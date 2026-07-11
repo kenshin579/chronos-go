@@ -226,6 +226,43 @@ func TestDeleteTask_RemovesTask(t *testing.T) {
 	}
 }
 
+func TestAction_RejectsCrossOrigin(t *testing.T) {
+	client := newTestRedis(t)
+	id := seedScheduled(t, client)
+	srv := httptest.NewServer(Handler(chronos.NewInspector(client)))
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/queues/default/tasks/"+id+"/delete", nil)
+	req.Header.Set("Origin", "http://evil.example.com")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	// task must still exist (delete rejected)
+	insp := chronos.NewInspector(client)
+	if _, err := insp.GetTask(context.Background(), "default", id); err != nil {
+		t.Errorf("task was deleted despite cross-origin rejection: %v", err)
+	}
+}
+
+func TestTaskDetail_MissingReturns404(t *testing.T) {
+	client := newTestRedis(t)
+	srv := httptest.NewServer(Handler(chronos.NewInspector(client)))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/queues/default/tasks/nope")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
 func TestRunTask_RejectsGet(t *testing.T) {
 	client := newTestRedis(t)
 	srv := httptest.NewServer(Handler(chronos.NewInspector(client)))

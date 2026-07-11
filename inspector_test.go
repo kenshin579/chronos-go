@@ -2,6 +2,7 @@ package chronos
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -109,5 +110,14 @@ func TestInspector_GetTask_ReturnsDetailAndNotFound(t *testing.T) {
 
 	if _, err := insp.GetTask(ctx, "default", "does-not-exist"); err == nil {
 		t.Error("GetTask for missing id: want error, got nil")
+	}
+}
+
+func TestInspector_GetTask_NotFoundIsSentinel(t *testing.T) {
+	client := testutil.NewRedis(t)
+	insp := NewInspector(client)
+	_, err := insp.GetTask(context.Background(), "default", "nope")
+	if !errors.Is(err, ErrTaskNotFound) {
+		t.Errorf("err = %v, want ErrTaskNotFound", err)
 	}
 }

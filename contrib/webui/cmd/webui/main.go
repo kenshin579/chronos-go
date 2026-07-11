@@ -12,6 +12,7 @@ import (
 	"context"
 	"flag"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -41,15 +42,21 @@ func main() {
 
 	srv := &http.Server{Addr: *addr, Handler: webui.Handler(chronos.NewInspector(rdb))}
 
+	ln, err := net.Listen("tcp", *addr)
+	if err != nil {
+		log.Fatalf("cannot listen on %s: %v", *addr, err)
+	}
+
 	go func() {
 		log.Printf("chronos-go console on http://%s (redis %s db %d)", *addr, *redisAddr, *db)
-		if !*noOpen {
-			openBrowser("http://" + *addr)
-		}
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("serve: %v", err)
 		}
 	}()
+
+	if !*noOpen {
+		openBrowser("http://" + *addr)
+	}
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
