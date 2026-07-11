@@ -100,6 +100,10 @@ type ServerConfig struct {
 	// deletes the oldest beyond this even within the retention window. Defaults
 	// to 10000. Set negative to disable the size cap.
 	MaxArchived int
+	// MaxCompleted caps the number of retained completed tasks per queue; the
+	// janitor deletes the oldest beyond this even before their retention
+	// expires. Defaults to 10000. Set negative to disable the size cap.
+	MaxCompleted int
 	// JanitorInterval is how often the janitor runs. Defaults to 1 minute.
 	JanitorInterval time.Duration
 }
@@ -165,6 +169,9 @@ func NewServer(r redis.UniversalClient, cfg ServerConfig) *Server {
 	}
 	if cfg.MaxArchived == 0 {
 		cfg.MaxArchived = 10000
+	}
+	if cfg.MaxCompleted == 0 {
+		cfg.MaxCompleted = 10000
 	}
 	if cfg.JanitorInterval <= 0 {
 		cfg.JanitorInterval = 1 * time.Minute
@@ -547,10 +554,11 @@ func (s *Server) recovererLoop(ctx context.Context) {
 	}
 }
 
-// janitorLoop periodically deletes expired / over-capacity archived tasks from
-// each queue. Removals are atomic, batched, and idempotent, so running it on
-// every server instance is safe. A negative MaxArchived disables the size cap
-// (handled by TrimArchived).
+// janitorLoop periodically deletes expired / over-capacity archived tasks and
+// retained-completed tasks from each queue. Removals are atomic, batched, and
+// idempotent, so running it on every server instance is safe. A negative
+// MaxArchived / MaxCompleted disables the corresponding size cap (handled by
+// TrimArchived / TrimCompleted).
 func (s *Server) janitorLoop(ctx context.Context) {
 	defer s.wg.Done()
 	ticker := time.NewTicker(s.cfg.JanitorInterval)
@@ -573,6 +581,17 @@ func (s *Server) janitorLoop(ctx context.Context) {
 				}
 				if n > 0 {
 					s.logger.Debug("chronos: janitor trimmed archived", "queue", q, "removed", n)
+				}
+				nc, err := s.rdb.TrimCompleted(ctx, q, time.Now(), s.cfg.MaxCompleted, janitorBatchSize)
+				if err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					s.logger.Error("chronos: janitor trim completed failed", "queue", q, "error", err)
+					continue
+				}
+				if nc > 0 {
+					s.logger.Debug("chronos: janitor trimmed completed", "queue", q, "removed", nc)
 				}
 			}
 		}

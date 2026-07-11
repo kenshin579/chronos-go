@@ -69,8 +69,10 @@ func zsetKeyForState(qname, state string) (string, error) {
 		return base.RetryKey(qname), nil
 	case "archived":
 		return base.ArchivedKey(qname), nil
+	case "completed":
+		return base.CompletedKey(qname), nil
 	default:
-		return "", fmt.Errorf("%w %q (want scheduled|retry|archived)", ErrInvalidState, state)
+		return "", fmt.Errorf("%w %q (want scheduled|retry|archived|completed)", ErrInvalidState, state)
 	}
 }
 
@@ -93,7 +95,7 @@ func (i *Inspector) ListTasks(ctx context.Context, qname, state string, limit in
 	return infos, nil
 }
 
-// GetTask returns full detail for a single stored task (scheduled/retry/archived).
+// GetTask returns full detail for a single stored task (scheduled/retry/archived/completed).
 func (i *Inspector) GetTask(ctx context.Context, qname, taskID string) (*TaskInfo, error) {
 	msg, err := i.rdb.GetTask(ctx, qname, taskID)
 	if err == redis.Nil {
@@ -113,7 +115,7 @@ func (i *Inspector) GetTask(ctx context.Context, qname, taskID string) (*TaskInf
 
 // taskInfoFromMsg maps the stored message to the public TaskInfo (no timestamp).
 func taskInfoFromMsg(m *base.TaskMessage) *TaskInfo {
-	return &TaskInfo{
+	ti := &TaskInfo{
 		ID:       m.ID,
 		Kind:     m.Kind,
 		Queue:    m.Queue,
@@ -123,6 +125,10 @@ func taskInfoFromMsg(m *base.TaskMessage) *TaskInfo {
 		MaxRetry: m.MaxRetry,
 		LastErr:  m.LastErr,
 	}
+	if m.CompletedAt > 0 {
+		ti.CompletedAt = time.Unix(m.CompletedAt, 0)
+	}
+	return ti
 }
 
 // RunTask promotes a scheduled/retry/archived task so it runs immediately.

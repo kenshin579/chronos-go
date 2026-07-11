@@ -57,7 +57,8 @@ type TaskInfo struct {
 	Retried       int       // retries already attempted
 	MaxRetry      int       // retry budget
 	LastErr       string    // most recent failure message ("" if none)
-	NextProcessAt time.Time // ZSET score as a time: scheduled-for / retry-at / died-at
+	NextProcessAt time.Time // ZSET score as a time: scheduled-for / retry-at / died-at / expires-at (completed)
+	CompletedAt   time.Time // when the task finished successfully (zero unless retained)
 }
 
 // Client enqueues tasks.
@@ -83,6 +84,7 @@ type enqueueOptions struct {
 	processAt time.Time     // zero = immediate
 	uniqueTTL time.Duration // > 0 enables unique deduplication
 	misfire   MisfirePolicy // used by scheduler registrations only
+	retention time.Duration // > 0 keeps the completed task for inspection
 }
 
 // Option customizes a single Enqueue call.
@@ -155,6 +157,25 @@ func WithUnique(ttl time.Duration) Option {
 	})
 }
 
+// WithRetention keeps the task in the "completed" set for d after it succeeds,
+// so it can be inspected (Inspector/CLI state "completed") before the janitor
+// removes it. The default (no option) deletes the task immediately on success.
+// Durations under one second are rounded up to one second; d <= 0 is ignored.
+// Note: on high-throughput queues a long retention grows Redis memory — the
+// per-queue MaxCompleted cap (ServerConfig) bounds the worst case.
+func WithRetention(d time.Duration) Option {
+	return optionFunc(func(o *enqueueOptions) {
+		if d <= 0 {
+			o.retention = 0
+			return
+		}
+		if d < time.Second {
+			d = time.Second
+		}
+		o.retention = d
+	})
+}
+
 // WithMisfirePolicy sets how a scheduled job handles missed triggers (after a
 // leader-election gap or downtime). Only meaningful for RegisterInterval /
 // RegisterCron; ignored by a plain Enqueue. Defaults to MisfireSkip.
@@ -188,6 +209,7 @@ func Enqueue[T TaskArgs](ctx context.Context, c *Client, args T, opts ...Option)
 		Queue:     options.queue,
 		MaxRetry:  options.maxRetry,
 		NoArchive: options.noArchive,
+		Retention: int64(options.retention / time.Second),
 	}
 	scheduled := !options.processAt.IsZero() && options.processAt.After(time.Now())
 	unique := options.uniqueTTL > 0
