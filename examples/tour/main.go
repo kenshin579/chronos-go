@@ -1,8 +1,8 @@
 // Command tour is a narrated, runnable walkthrough of everything chronos-go can
 // do: the core queue, reliability (retry / dead-letter), delayed + unique tasks,
 // the Inspector, the distributed scheduler with leader failover, the retention
-// janitor, the heartbeat, and weighted priority queues. It is not a test — it
-// is meant to be *watched*:
+// janitor, the heartbeat, weighted priority queues, and completed-task
+// retention. It is not a test — it is meant to be *watched*:
 // run it and read the output to see tasks being enqueued, processed, retried,
 // dead-lettered, delayed, deduplicated, scheduled across a leader hand-off,
 // auto-cleaned, and kept alive past RecoverMinIdle by the heartbeat.
@@ -331,6 +331,44 @@ func main() {
 	shutPrioCtx, cancelP := context.WithTimeout(context.Background(), 3*time.Second)
 	_ = psrv.Shutdown(shutPrioCtx)
 	cancelP()
+
+	section("11) completed retention: 성공한 태스크를 잠시 보관해 눈으로 확인")
+	rmux := chronos.NewMux()
+	chronos.AddHandler(rmux, func(ctx context.Context, t *chronos.Task[GreetArgs]) error {
+		fmt.Printf("   ✅ [retention] %s 처리 완료 — 3초간 completed로 보관됨\n", t.Args.Name)
+		return nil
+	})
+	rsrv := chronos.NewServer(rdb, chronos.ServerConfig{
+		Queues:          map[string]int{"ret-demo": 1},
+		Concurrency:     2,
+		JanitorInterval: 500 * time.Millisecond,
+	})
+	if err := rsrv.Start(ctx, rmux); err != nil {
+		fmt.Printf("retention 서버 start 실패: %v\n", err)
+	}
+	if _, err := chronos.Enqueue(ctx, client, GreetArgs{Name: "보관테스트"}, chronos.WithQueue("ret-demo"), chronos.WithRetention(3*time.Second)); err != nil {
+		fmt.Printf("enqueue 실패: %v\n", err)
+	}
+	time.Sleep(1 * time.Second)
+	retCompleted := func() int64 {
+		qs, err := insp.Queues(ctx)
+		if err != nil {
+			return -1
+		}
+		for _, q := range qs {
+			if q.Queue == "ret-demo" {
+				return q.Completed
+			}
+		}
+		return 0
+	}
+	fmt.Printf("   처리 직후 → completed=%d (조회 가능: task ls ret-demo completed)\n", retCompleted())
+	fmt.Println("   ... retention(3s) 경과 대기, janitor가 정리 ...")
+	time.Sleep(4 * time.Second)
+	fmt.Printf("   janitor 실행 후 → completed=%d (자동 정리됨)\n", retCompleted())
+	shutRetCtx, cancelR := context.WithTimeout(context.Background(), 3*time.Second)
+	_ = rsrv.Shutdown(shutRetCtx)
+	cancelR()
 
 	fmt.Println("\n───────────────────────────────────────────────")
 	fmt.Println("투어 완료. 위 로그가 chronos-go가 실제로 동작하는 모습입니다.")
