@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kenshin579/chronos-go/internal/base"
 	"github.com/kenshin579/chronos-go/internal/testutil"
 )
 
@@ -194,7 +195,17 @@ func TestInspector_CompletedCountAndActions(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	waitCompleted(info.ID) // 재실행 후 다시 completed로
+	// 재완료 확인: RunTask가 completed ZSET에서 ZREM했으므로, 재등장이 곧 재완료다.
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		if _, zerr := client.ZScore(ctx, base.CompletedKey("default"), info.ID).Result(); zerr == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("task did not re-complete into the completed zset")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 
 	// DeleteTask: 보관분 조기 삭제.
 	if err := insp.DeleteTask(ctx, "default", info.ID); err != nil {

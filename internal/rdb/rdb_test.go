@@ -210,6 +210,40 @@ func TestDone_RetentionMovesToCompleted(t *testing.T) {
 	}
 }
 
+func TestEnqueue_ClearsStaleCompletedEntry(t *testing.T) {
+	client := testutil.NewRedis(t)
+	r := NewRDB(client)
+	ctx := context.Background()
+
+	// 완료 보관된 태스크 "x"
+	msg := &base.TaskMessage{ID: "x", Kind: "k", Queue: "default", Retention: 3600}
+	if err := r.Enqueue(ctx, msg); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if err := r.EnsureGroup(ctx, "default"); err != nil {
+		t.Fatalf("group: %v", err)
+	}
+	got, sid, err := r.Dequeue(ctx, "w", -1, "default")
+	if err != nil {
+		t.Fatalf("dequeue: %v", err)
+	}
+	if err := r.Done(ctx, "default", sid, got); err != nil {
+		t.Fatalf("done: %v", err)
+	}
+	if _, err := client.ZScore(ctx, base.CompletedKey("default"), "x").Result(); err != nil {
+		t.Fatalf("precondition: x should be in completed: %v", err)
+	}
+
+	// 같은 ID로 재enqueue → 잔존 completed 엔트리가 제거되어야 한다.
+	fresh := &base.TaskMessage{ID: "x", Kind: "k", Queue: "default"}
+	if err := r.Enqueue(ctx, fresh); err != nil {
+		t.Fatalf("re-enqueue: %v", err)
+	}
+	if _, err := client.ZScore(ctx, base.CompletedKey("default"), "x").Result(); err != redis.Nil {
+		t.Errorf("stale completed entry not cleared (err=%v)", err)
+	}
+}
+
 func TestDone_NoRetentionDeletesImmediately(t *testing.T) {
 	client := testutil.NewRedis(t)
 	r := NewRDB(client)

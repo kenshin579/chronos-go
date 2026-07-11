@@ -20,7 +20,7 @@ package chronos
 //  [x] runTaskCmd / deleteTask (Inspector)                  → TestCluster_InspectorRunAndDelete
 //  [x] QueueStats/Queues/ListZSetTasks/GetTask              → TestCluster_InspectorQueries
 //  [x] two queues on different slots (MOVED redirects)      → TestCluster_TwoQueuesDifferentSlots
-//  [x] completeCmd + TrimCompleted (retention)              → TestCluster_CompletedRetention
+//  [x] Done retention (moveToZSetCmd) + TrimCompleted       → TestCluster_CompletedRetention
 
 import (
 	"context"
@@ -536,7 +536,7 @@ func TestCluster_CompletedRetention(t *testing.T) {
 	}
 	defer srv.Shutdown(context.Background())
 
-	// completeCmd: 성공 후 completed에 보관된다.
+	// Done retention (moveToZSetCmd): 성공 후 completed에 보관된다.
 	info, err := Enqueue(ctx, c, clArgs{N: 13}, WithQueue("retq"), WithRetention(time.Second))
 	if err != nil {
 		t.Fatalf("enqueue: %v", err)

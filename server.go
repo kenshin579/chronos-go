@@ -391,6 +391,7 @@ func (s *Server) process(ctx context.Context, qname, streamID string, msg *base.
 
 	msg.Retried++
 	msg.LastErr = err.Error()
+	msg.CompletedAt = 0 // a re-run task that fails must not show a stale completion time
 	retryAt := time.Now().Add(s.cfg.RetryDelayFunc(msg.Retried, err))
 	if rerr := s.rdb.Retry(opCtx, qname, streamID, msg, retryAt); rerr != nil {
 		s.logger.Error("chronos: retry scheduling failed", "id", msg.ID, "error", rerr)
@@ -479,7 +480,9 @@ func (s *Server) dispatchSafely(ctx context.Context, msg *base.TaskMessage) (err
 // the OnDeadLetter hook.
 func (s *Server) deadLetter(ctx context.Context, qname, streamID string, msg *base.TaskMessage, cause error) {
 	msg.LastErr = cause.Error()
+	msg.CompletedAt = 0 // a re-run task that fails must not show a stale completion time
 	if msg.NoArchive {
+		msg.Retention = 0 // a discarded failure is not a success — never retain as completed
 		if derr := s.rdb.Done(ctx, qname, streamID, msg); derr != nil {
 			s.logger.Error("chronos: discard failed", "id", msg.ID, "error", derr)
 		}

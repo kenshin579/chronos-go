@@ -31,14 +31,15 @@ type SchedulerConfig struct {
 
 // scheduleEntry is one registered cron/interval job.
 type scheduleEntry struct {
-	id       string // stable ID: "<kind>:<spec>"
-	kind     string
-	payload  []byte
-	queue    string
-	maxRetry int
-	noArch   bool
-	misfire  MisfirePolicy
-	schedule cronSchedule
+	id        string // stable ID: "<kind>:<spec>"
+	kind      string
+	payload   []byte
+	queue     string
+	maxRetry  int
+	noArch    bool
+	misfire   MisfirePolicy
+	retention time.Duration
+	schedule  cronSchedule
 }
 
 // Scheduler registers periodic jobs and, on whichever instance is elected
@@ -89,7 +90,8 @@ func (s *Scheduler) register(spec string, sched cronSchedule, kind string, paylo
 	id := fmt.Sprintf("%s:%s#%x", kind, spec, sum[:8])
 	s.entries = append(s.entries, &scheduleEntry{
 		id: id, kind: kind, payload: payload, queue: o.queue,
-		maxRetry: o.maxRetry, noArch: o.noArchive, misfire: o.misfire, schedule: sched,
+		maxRetry: o.maxRetry, noArch: o.noArchive, misfire: o.misfire,
+		retention: o.retention, schedule: sched,
 	})
 }
 
@@ -249,6 +251,7 @@ func (s *Scheduler) enqueueTrigger(ctx context.Context, e *scheduleEntry, trigge
 	msg := &base.TaskMessage{
 		ID: triggerID, Kind: e.kind, Payload: e.payload, Queue: e.queue,
 		MaxRetry: e.maxRetry, NoArchive: e.noArch,
+		Retention: int64(e.retention / time.Second),
 	}
 	dedupKey := base.PeriodicDedupKey(e.queue, triggerID)
 	// Dedup key lives well beyond a leader-handover window but not forever.

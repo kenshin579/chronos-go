@@ -169,7 +169,9 @@ func (r *RDB) RunTask(ctx context.Context, qname, taskID string) error {
 // tasks.
 // If called on an in-flight (pending/active) task, deleting the body leaves an
 // orphan stream/PEL entry; that orphan is harmless and is trimmed (XACK+XDEL) by
-// the next dequeue or recover pass.
+// the next dequeue or recover pass. For an in-flight task with retention, a
+// racing Done may resurrect the hash into the completed set; the janitor removes
+// it at its expiry.
 func (r *RDB) DeleteTask(ctx context.Context, qname, taskID string) error {
 	msg, err := r.GetTask(ctx, qname, taskID)
 	if err != nil && err != redis.Nil {
