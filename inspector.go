@@ -3,6 +3,7 @@ package chronos
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 
@@ -77,9 +78,43 @@ func (i *Inspector) ListTasks(ctx context.Context, qname, state string, limit in
 	}
 	infos := make([]*TaskInfo, 0, len(entries))
 	for _, e := range entries {
-		infos = append(infos, &TaskInfo{ID: e.Msg.ID, Kind: e.Msg.Kind, Queue: e.Msg.Queue})
+		ti := taskInfoFromMsg(e.Msg)
+		ti.NextProcessAt = time.Unix(int64(e.Score), 0)
+		infos = append(infos, ti)
 	}
 	return infos, nil
+}
+
+// GetTask returns full detail for a single stored task (scheduled/retry/archived).
+func (i *Inspector) GetTask(ctx context.Context, qname, taskID string) (*TaskInfo, error) {
+	msg, err := i.rdb.GetTask(ctx, qname, taskID)
+	if err == redis.Nil {
+		return nil, fmt.Errorf("chronos: task %q not found in queue %q", taskID, qname)
+	}
+	if err != nil {
+		return nil, err
+	}
+	ti := taskInfoFromMsg(msg)
+	if zsetKey, kerr := zsetKeyForState(qname, ti.State); kerr == nil {
+		if score, ok, serr := i.rdb.ZScore(ctx, zsetKey, taskID); serr == nil && ok {
+			ti.NextProcessAt = time.Unix(int64(score), 0)
+		}
+	}
+	return ti, nil
+}
+
+// taskInfoFromMsg maps the stored message to the public TaskInfo (no timestamp).
+func taskInfoFromMsg(m *base.TaskMessage) *TaskInfo {
+	return &TaskInfo{
+		ID:       m.ID,
+		Kind:     m.Kind,
+		Queue:    m.Queue,
+		State:    m.State.String(),
+		Payload:  m.Payload,
+		Retried:  m.Retried,
+		MaxRetry: m.MaxRetry,
+		LastErr:  m.LastErr,
+	}
 }
 
 // RunTask promotes a scheduled/retry/archived task so it runs immediately.

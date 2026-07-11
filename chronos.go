@@ -43,11 +43,21 @@ func (t *Task[T]) ID() string { return t.id }
 // Queue returns the queue the task was enqueued to.
 func (t *Task[T]) Queue() string { return t.queue }
 
-// TaskInfo describes an enqueued task returned by Enqueue.
+// TaskInfo describes an enqueued or stored task. Enqueue returns one with only
+// ID/Kind/Queue set; the Inspector fills the rest for stored tasks.
 type TaskInfo struct {
 	ID    string
 	Kind  string
 	Queue string
+
+	// The following are populated by Inspector.ListTasks / GetTask for tasks
+	// stored in a state ZSET (scheduled / retry / archived).
+	State         string    // "scheduled" | "retry" | "archived" | ...
+	Payload       []byte    // raw task payload
+	Retried       int       // retries already attempted
+	MaxRetry      int       // retry budget
+	LastErr       string    // most recent failure message ("" if none)
+	NextProcessAt time.Time // ZSET score as a time: scheduled-for / retry-at / died-at
 }
 
 // Client enqueues tasks.
