@@ -17,6 +17,7 @@ type QueueStats struct {
 	Scheduled int64
 	Retry     int64
 	Archived  int64
+	Completed int64
 }
 
 // QueueStats returns the per-state task counts for a queue.
@@ -53,6 +54,10 @@ func (r *RDB) QueueStats(ctx context.Context, qname string) (*QueueStats, error)
 	if err != nil {
 		return nil, err
 	}
+	completed, err := r.client.ZCard(ctx, base.CompletedKey(qname)).Result()
+	if err != nil {
+		return nil, err
+	}
 
 	streamPending := xlen - active // stream total minus in-flight = not-yet-delivered
 	if streamPending < 0 {
@@ -65,6 +70,7 @@ func (r *RDB) QueueStats(ctx context.Context, qname string) (*QueueStats, error)
 		Scheduled: scheduled,
 		Retry:     retry,
 		Archived:  archived,
+		Completed: completed,
 	}, nil
 }
 
@@ -128,36 +134,39 @@ func (r *RDB) GetTask(ctx context.Context, qname, taskID string) (*base.TaskMess
 
 // runTaskCmd moves a task from whichever state ZSET holds it into the stream for
 // immediate processing. It only promotes a task that was actually removed from a
-// state ZSET (scheduled/retry/archived): if the task is not in any of them (e.g.
-// it is already pending or in-flight/active), it does nothing. This prevents a
-// duplicate stream entry (double execution) and makes concurrent RunTask calls
-// safe — only the one that wins the ZREM promotes.
-// KEYS[1] scheduled, KEYS[2] retry, KEYS[3] archived, KEYS[4] stream, KEYS[5] task hash.
+// state ZSET (scheduled/retry/archived/completed): if the task is not in any of
+// them (e.g. it is already pending or in-flight/active), it does nothing. This
+// prevents a duplicate stream entry (double execution) and makes concurrent
+// RunTask calls safe — only the one that wins the ZREM promotes.
+// KEYS[1] scheduled, KEYS[2] retry, KEYS[3] archived, KEYS[4] completed,
+// KEYS[5] stream, KEYS[6] task hash.
 // ARGV[1] taskID, ARGV[2] pending state.
 var runTaskCmd = redis.NewScript(`
-local removed = redis.call("ZREM", KEYS[1], ARGV[1]) + redis.call("ZREM", KEYS[2], ARGV[1]) + redis.call("ZREM", KEYS[3], ARGV[1])
+local removed = redis.call("ZREM", KEYS[1], ARGV[1]) + redis.call("ZREM", KEYS[2], ARGV[1]) + redis.call("ZREM", KEYS[3], ARGV[1]) + redis.call("ZREM", KEYS[4], ARGV[1])
 if removed == 0 then
   return 0
 end
-if redis.call("EXISTS", KEYS[5]) == 0 then
+if redis.call("EXISTS", KEYS[6]) == 0 then
   return 0
 end
-redis.call("XADD", KEYS[4], "*", "task_id", ARGV[1])
-redis.call("HSET", KEYS[5], "state", ARGV[2])
+redis.call("XADD", KEYS[5], "*", "task_id", ARGV[1])
+redis.call("HSET", KEYS[6], "state", ARGV[2])
 return 1
 `)
 
-// RunTask promotes a scheduled/retry/archived task to the stream so it runs now.
+// RunTask promotes a scheduled/retry/archived/completed task to the stream so it runs now.
 func (r *RDB) RunTask(ctx context.Context, qname, taskID string) error {
 	keys := []string{
 		base.ScheduledKey(qname), base.RetryKey(qname), base.ArchivedKey(qname),
+		base.CompletedKey(qname),
 		base.StreamKey(qname), base.TaskKey(qname, taskID),
 	}
 	return runTaskCmd.Run(ctx, r.client, keys, taskID, int(base.StatePending)).Err()
 }
 
 // DeleteTask removes a task from all state ZSETs and deletes its body, releasing
-// any unique lock it holds. It is intended for scheduled/retry/archived tasks.
+// any unique lock it holds. It is intended for scheduled/retry/archived/completed
+// tasks.
 // If called on an in-flight (pending/active) task, deleting the body leaves an
 // orphan stream/PEL entry; that orphan is harmless and is trimmed (XACK+XDEL) by
 // the next dequeue or recover pass.
@@ -170,6 +179,7 @@ func (r *RDB) DeleteTask(ctx context.Context, qname, taskID string) error {
 	pipe.ZRem(ctx, base.ScheduledKey(qname), taskID)
 	pipe.ZRem(ctx, base.RetryKey(qname), taskID)
 	pipe.ZRem(ctx, base.ArchivedKey(qname), taskID)
+	pipe.ZRem(ctx, base.CompletedKey(qname), taskID)
 	pipe.Del(ctx, base.TaskKey(qname, taskID))
 	if _, err := pipe.Exec(ctx); err != nil {
 		return err

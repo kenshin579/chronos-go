@@ -3,6 +3,7 @@ package chronos
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -119,5 +120,87 @@ func TestInspector_GetTask_NotFoundIsSentinel(t *testing.T) {
 	_, err := insp.GetTask(context.Background(), "default", "nope")
 	if !errors.Is(err, ErrTaskNotFound) {
 		t.Errorf("err = %v, want ErrTaskNotFound", err)
+	}
+}
+
+func TestInspector_CompletedCountAndActions(t *testing.T) {
+	client := testutil.NewRedis(t)
+	c := NewClient(client)
+	defer c.Close()
+	ctx := context.Background()
+
+	var runs atomic.Int32
+	mux := NewMux()
+	AddHandler(mux, func(ctx context.Context, task *Task[emailArgs]) error {
+		runs.Add(1)
+		return nil
+	})
+	srv := NewServer(client, ServerConfig{Queues: map[string]int{"default": 1}, Concurrency: 1})
+	if err := srv.Start(ctx, mux); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	info, err := Enqueue(ctx, c, emailArgs{UserID: "cc"}, WithRetention(time.Hour))
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	insp := NewInspector(client)
+	waitCompleted := func(id string) {
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			got, gerr := insp.GetTask(ctx, "default", id)
+			if gerr == nil && got.State == "completed" {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("task %s not completed in time", id)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	waitCompleted(info.ID)
+
+	qs, err := insp.Queues(ctx)
+	if err != nil {
+		t.Fatalf("queues: %v", err)
+	}
+	var completed int64 = -1
+	for _, q := range qs {
+		if q.Queue == "default" {
+			completed = q.Completed
+		}
+	}
+	if completed != 1 {
+		t.Errorf("Completed count = %d, want 1", completed)
+	}
+
+	tasks, err := insp.ListTasks(ctx, "default", "completed", 10)
+	if err != nil || len(tasks) != 1 {
+		t.Fatalf("list completed: n=%d err=%v", len(tasks), err)
+	}
+	if tasks[0].CompletedAt.IsZero() {
+		t.Error("ListTasks completed: CompletedAt zero")
+	}
+
+	// RunTask: completed 태스크 재실행 → 핸들러 2회.
+	if err := insp.RunTask(ctx, "default", info.ID); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for runs.Load() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("re-run did not execute (runs=%d)", runs.Load())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	waitCompleted(info.ID) // 재실행 후 다시 completed로
+
+	// DeleteTask: 보관분 조기 삭제.
+	if err := insp.DeleteTask(ctx, "default", info.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := insp.GetTask(ctx, "default", info.ID); err == nil {
+		t.Error("task still present after delete")
 	}
 }

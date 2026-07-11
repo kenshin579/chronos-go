@@ -38,6 +38,7 @@ type QueueInfo struct {
 	Scheduled int64
 	Retry     int64
 	Archived  int64
+	Completed int64
 }
 
 // Queues lists all known queues with their per-state counts.
@@ -55,6 +56,7 @@ func (i *Inspector) Queues(ctx context.Context) ([]*QueueInfo, error) {
 		infos = append(infos, &QueueInfo{
 			Queue: st.Queue, Pending: st.Pending, Active: st.Active,
 			Scheduled: st.Scheduled, Retry: st.Retry, Archived: st.Archived,
+			Completed: st.Completed,
 		})
 	}
 	return infos, nil

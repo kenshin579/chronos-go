@@ -96,3 +96,15 @@ type greetArgs struct {
 }
 
 func (greetArgs) Kind() string { return "cli:greet" }
+
+func TestRun_QueueLsIncludesCompleted(t *testing.T) {
+	client := testutil.NewRedis(t)
+	var out bytes.Buffer
+	code := run([]string{"queue", "ls"}, client, &out)
+	if code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	if !strings.Contains(out.String(), "COMPLETED") {
+		t.Errorf("queue ls header missing COMPLETED:\n%s", out.String())
+	}
+}
