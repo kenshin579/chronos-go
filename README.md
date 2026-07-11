@@ -217,6 +217,44 @@ See [`docs/OBSERVING.md`](docs/OBSERVING.md) for Redis-level inspection.
 - **Keys** are wrapped in a `{queue}` hash tag so every multi-key Lua script is
   Redis Cluster-safe.
 
+## Redis Cluster
+
+chronos-go works on Redis Cluster out of the box. Every key of a queue is
+wrapped in a `{queue}` hash tag, so a queue's keys share one slot (multi-key
+Lua stays atomic) while different queues spread across the cluster.
+
+```go
+rdb := redis.NewClusterClient(&redis.ClusterOptions{
+	Addrs: []string{"node1:6379", "node2:6379", "node3:6379"},
+})
+srv := chronos.NewServer(rdb, chronos.ServerConfig{ /* ... */ })
+```
+
+The CLI connects with `--cluster` (seed nodes, comma-separated — one is enough):
+
+```bash
+chronos --cluster --redis node1:6379,node2:6379 queue ls
+```
+
+Notes:
+- Redis Cluster has only logical database 0 (`--db` is standalone-only).
+- The global keys (`chronos:queues`, the scheduler leader lock) are accessed
+  with single-key commands or single-key Lua scripts only, so they are
+  cluster-safe without a hash tag.
+- Sentinel: inject a `redis.NewFailoverClient` — it satisfies the same
+  `redis.UniversalClient` interface — but Sentinel is not part of our tested
+  matrix yet.
+
+### Verifying against a real cluster
+
+The repo ships a disposable 6-node cluster and a script-complete integration
+suite (every Lua script and command pattern runs on cluster at least once):
+
+```bash
+cd deploy/redis-cluster && docker compose up -d && cd ../..
+make test-cluster
+```
+
 ## Delivery semantics
 
 chronos-go is **at-least-once**: a task can run more than once (e.g. a worker
@@ -250,6 +288,9 @@ default `127.0.0.1:6379`). They share a logical DB, so run packages serially:
 ```bash
 make check        # gofmt + vet + go test ./... -race -p 1 + contrib tests
 ```
+
+Cluster integration tests are opt-in: `make test-cluster` (see
+[`deploy/redis-cluster`](deploy/redis-cluster)).
 
 ## License
 

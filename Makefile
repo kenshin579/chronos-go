@@ -1,4 +1,4 @@
-.PHONY: test test-race vet fmt fmt-check check test-contrib
+.PHONY: test test-race vet fmt fmt-check check test-contrib test-cluster
 
 # Tests require a Redis reachable at $REDIS_ADDR (default 127.0.0.1:6379).
 # -p 1 runs package test binaries sequentially: they share a single logical
@@ -12,6 +12,12 @@ test-race:
 
 test-contrib:
 	cd contrib/prometheus && go test ./... -race
+
+# Cluster integration tests. Requires the disposable cluster from
+# deploy/redis-cluster (docker compose up -d). Skipped when the env is unset.
+test-cluster:
+	REDIS_CLUSTER_ADDRS=127.0.0.1:7000,127.0.0.1:7001,127.0.0.1:7002 \
+		go test -run 'TestCluster_' -p 1 -race .
 
 vet:
 	go vet ./...

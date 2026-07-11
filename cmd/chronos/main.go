@@ -1,17 +1,20 @@
 // Command chronos is a CLI for inspecting and administering chronos-go queues.
 //
-//	chronos [--redis addr] [--db n] queue ls
-//	chronos [--redis addr] [--db n] task ls   <queue> <scheduled|retry|archived>
-//	chronos [--redis addr] [--db n] task run  <queue> <task-id>
-//	chronos [--redis addr] [--db n] task rm   <queue> <task-id>
+//	chronos [--redis addr] [--db n] queue ls                       # standalone (default)
+//	chronos --cluster --redis n1:7000,n2:7001 queue ls             # Redis Cluster
+//	chronos [flags] task ls   <queue> <scheduled|retry|archived>
+//	chronos [flags] task run  <queue> <task-id>
+//	chronos [flags] task rm   <queue> <task-id>
 package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/redis/go-redis/v9"
@@ -20,16 +23,54 @@ import (
 )
 
 func main() {
-	addr := flag.String("redis", envOr("REDIS_ADDR", "127.0.0.1:6379"), "Redis address")
-	db := flag.Int("db", 0, "Redis database number")
+	standalone := flag.Bool("standalone", false, "connect to a standalone Redis (default)")
+	cluster := flag.Bool("cluster", false, "connect to a Redis Cluster (--redis takes comma-separated seed nodes)")
+	addr := flag.String("redis", envOr("REDIS_ADDR", "127.0.0.1:6379"), "Redis address (comma-separated for --cluster)")
+	db := flag.Int("db", 0, "Redis database number (standalone only; cluster has only DB 0)")
 	flag.Parse()
 
-	client := redis.NewClient(&redis.Options{Addr: *addr, DB: *db})
+	client, err := buildClient(*standalone, *cluster, *addr, *db)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "chronos:", err)
+		os.Exit(2)
+	}
 
 	// Not deferred: os.Exit skips deferred calls, so close explicitly first.
 	code := run(flag.Args(), client, os.Stdout)
 	_ = client.Close()
 	os.Exit(code)
+}
+
+// buildClient creates the Redis client for the chosen mode. The default (no
+// mode flag) is standalone, matching the CLI's historical behavior.
+func buildClient(standalone, cluster bool, addr string, db int) (redis.UniversalClient, error) {
+	if standalone && cluster {
+		return nil, errors.New("--standalone and --cluster are mutually exclusive")
+	}
+	if cluster {
+		if db != 0 {
+			return nil, errors.New("--db is not supported with --cluster: Redis Cluster has only database 0")
+		}
+		addrs := splitAddrs(addr)
+		if len(addrs) == 0 {
+			return nil, errors.New("--cluster requires at least one seed address in --redis")
+		}
+		return redis.NewClusterClient(&redis.ClusterOptions{Addrs: addrs}), nil
+	}
+	return redis.NewClient(&redis.Options{Addr: addr, DB: db}), nil
+}
+
+// splitAddrs splits a comma-separated address list, trimming whitespace and
+// dropping empty entries.
+func splitAddrs(s string) []string {
+	parts := strings.Split(s, ",")
+	addrs := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			addrs = append(addrs, p)
+		}
+	}
+	return addrs
 }
 
 func envOr(key, def string) string {
