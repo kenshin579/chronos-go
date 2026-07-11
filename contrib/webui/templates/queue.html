@@ -1,0 +1,19 @@
+{{define "content"}}
+<h1>Queue: {{.Queue}}</h1>
+{{if .Msg}}<p class="msg">{{.Msg}}</p>{{end}}
+<nav class="states">
+{{range .States}}<a href="/queues/{{$.Queue}}?state={{.}}" {{if eq . $.State}}class="active"{{end}}>{{.}}</a> {{end}}
+</nav>
+<table>
+<tr><th>ID</th><th>Kind</th><th>When</th></tr>
+{{range .Tasks}}
+<tr>
+<td><a href="/queues/{{$.Queue}}/tasks/{{.ID}}">{{.ID}}</a></td>
+<td>{{.Kind}}</td>
+<td>{{.NextProcessAt.Format "2006-01-02 15:04:05"}}</td>
+</tr>
+{{else}}
+<tr><td colspan="3">no tasks in this state</td></tr>
+{{end}}
+</table>
+{{end}}

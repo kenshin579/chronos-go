@@ -1,0 +1,15 @@
+{{define "content"}}
+<h1>Task {{.Task.ID}}</h1>
+<p><a href="/queues/{{.Task.Queue}}?state={{.Task.State}}">&larr; back to {{.Task.Queue}}</a></p>
+<dl>
+<dt>Kind</dt><dd>{{.Task.Kind}}</dd>
+<dt>State</dt><dd>{{.Task.State}}</dd>
+<dt>Retried</dt><dd>{{.Task.Retried}} / {{.Task.MaxRetry}}</dd>
+<dt>When</dt><dd>{{.Task.NextProcessAt.Format "2006-01-02 15:04:05"}}</dd>
+<dt>Last error</dt><dd class="err">{{if .Task.LastErr}}{{.Task.LastErr}}{{else}}(none){{end}}</dd>
+</dl>
+<h2>Payload</h2>
+<pre>{{.Payload}}</pre>
+<form method="post" action="/queues/{{.Task.Queue}}/tasks/{{.Task.ID}}/run"><button>Re-run now</button></form>
+<form method="post" action="/queues/{{.Task.Queue}}/tasks/{{.Task.ID}}/delete"><button class="danger">Delete</button></form>
+{{end}}
