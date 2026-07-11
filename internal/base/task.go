@@ -58,6 +58,12 @@ type TaskMessage struct {
 	// persisted so the Inspector and Web UI can show why a task was retried or
 	// dead-lettered. Empty until the first failure.
 	LastErr string `json:"last_err,omitempty"`
+	// Retention is how long (in seconds) a successfully completed task is kept
+	// in the completed ZSET for inspection. 0 (default) deletes it immediately.
+	Retention int64 `json:"retention,omitempty"`
+	// CompletedAt is the unix time the task finished successfully. Set only
+	// when the task is kept (Retention > 0).
+	CompletedAt int64 `json:"completed_at,omitempty"`
 }
 
 // EncodeMessage serializes a TaskMessage for storage in Redis.
