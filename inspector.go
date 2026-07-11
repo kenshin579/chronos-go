@@ -71,13 +71,13 @@ func (i *Inspector) ListTasks(ctx context.Context, qname, state string, limit in
 	if err != nil {
 		return nil, err
 	}
-	msgs, err := i.rdb.ListZSetTasks(ctx, qname, zsetKey, limit)
+	entries, err := i.rdb.ListZSetTasks(ctx, qname, zsetKey, limit)
 	if err != nil {
 		return nil, err
 	}
-	infos := make([]*TaskInfo, 0, len(msgs))
-	for _, m := range msgs {
-		infos = append(infos, &TaskInfo{ID: m.ID, Kind: m.Kind, Queue: m.Queue})
+	infos := make([]*TaskInfo, 0, len(entries))
+	for _, e := range entries {
+		infos = append(infos, &TaskInfo{ID: e.Msg.ID, Kind: e.Msg.Kind, Queue: e.Msg.Queue})
 	}
 	return infos, nil
 }

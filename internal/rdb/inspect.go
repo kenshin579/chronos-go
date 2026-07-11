@@ -73,18 +73,26 @@ func (r *RDB) Queues(ctx context.Context) ([]string, error) {
 	return r.client.SMembers(ctx, base.QueuesKey()).Result()
 }
 
-// ListZSetTasks returns up to limit task messages referenced by a state ZSET
-// (scheduled / retry / archived), ordered by score (soonest / oldest first).
-func (r *RDB) ListZSetTasks(ctx context.Context, qname, zsetKey string, limit int) ([]*base.TaskMessage, error) {
+// ZSetTask is a task referenced by a state ZSET together with its score
+// (a Unix timestamp: scheduled-for / retry-at / died-at).
+type ZSetTask struct {
+	Msg   *base.TaskMessage
+	Score float64
+}
+
+// ListZSetTasks returns up to limit tasks referenced by a state ZSET, each with
+// its score. Entries whose task body has been deleted are skipped.
+func (r *RDB) ListZSetTasks(ctx context.Context, qname, zsetKey string, limit int) ([]*ZSetTask, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
-	ids, err := r.client.ZRange(ctx, zsetKey, 0, int64(limit-1)).Result()
+	zs, err := r.client.ZRangeWithScores(ctx, zsetKey, 0, int64(limit-1)).Result()
 	if err != nil {
 		return nil, err
 	}
-	tasks := make([]*base.TaskMessage, 0, len(ids))
-	for _, id := range ids {
+	tasks := make([]*ZSetTask, 0, len(zs))
+	for _, z := range zs {
+		id, _ := z.Member.(string)
 		msg, err := r.GetTask(ctx, qname, id)
 		if err == redis.Nil {
 			continue // body gone; skip
@@ -92,9 +100,21 @@ func (r *RDB) ListZSetTasks(ctx context.Context, qname, zsetKey string, limit in
 		if err != nil {
 			return nil, err
 		}
-		tasks = append(tasks, msg)
+		tasks = append(tasks, &ZSetTask{Msg: msg, Score: z.Score})
 	}
 	return tasks, nil
+}
+
+// ZScore returns the score of taskID in zsetKey, or (0, false) if absent.
+func (r *RDB) ZScore(ctx context.Context, zsetKey, taskID string) (float64, bool, error) {
+	score, err := r.client.ZScore(ctx, zsetKey, taskID).Result()
+	if err == redis.Nil {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return score, true, nil
 }
 
 // GetTask reads a single task's message by ID. Returns redis.Nil if absent.
