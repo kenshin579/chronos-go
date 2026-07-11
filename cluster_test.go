@@ -17,9 +17,9 @@ package chronos
 //  [x] recover(XAUTOCLAIM)                                  → TestCluster_RecoverAbandonedTask
 //  [x] heartbeat(XCLAIM JUSTID + PEXPIRE)                   → TestCluster_HeartbeatLongTask
 //  [x] janitor(TrimArchived)                                → TestCluster_JanitorTrimsArchived
-//  [ ] runTaskCmd / deleteTask (Inspector)                  → TestCluster_InspectorRunAndDelete (Task 6)
-//  [ ] QueueStats/Queues/ListZSetTasks/GetTask              → TestCluster_InspectorQueries (Task 6)
-//  [ ] two queues on different slots (MOVED redirects)      → TestCluster_TwoQueuesDifferentSlots (Task 6)
+//  [x] runTaskCmd / deleteTask (Inspector)                  → TestCluster_InspectorRunAndDelete
+//  [x] QueueStats/Queues/ListZSetTasks/GetTask              → TestCluster_InspectorQueries
+//  [x] two queues on different slots (MOVED redirects)      → TestCluster_TwoQueuesDifferentSlots
 
 import (
 	"context"
@@ -378,4 +378,136 @@ func TestCluster_JanitorTrimsArchived(t *testing.T) {
 	}
 	waitFor(t, 10*time.Second, "tasks archived", func() bool { return archivedCount() == 3 })
 	waitFor(t, 10*time.Second, "janitor trimmed archived", func() bool { return archivedCount() == 0 })
+}
+
+func TestCluster_InspectorRunAndDelete(t *testing.T) {
+	client := testutil.NewClusterRedis(t)
+	c := NewClient(client)
+	defer c.Close()
+	ctx := context.Background()
+	insp := NewInspector(client)
+
+	// runTaskCmd: promote a far-future scheduled task to the stream.
+	runInfo, err := Enqueue(ctx, c, clArgs{N: 10}, WithProcessIn(time.Hour))
+	if err != nil {
+		t.Fatalf("enqueue run-target: %v", err)
+	}
+	if err := insp.RunTask(ctx, "default", runInfo.ID); err != nil {
+		t.Fatalf("RunTask: %v", err)
+	}
+	tasks, err := insp.ListTasks(ctx, "default", "scheduled", 10)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, ti := range tasks {
+		if ti.ID == runInfo.ID {
+			t.Error("task still in scheduled after RunTask")
+		}
+	}
+
+	// deleteTask: remove a scheduled task entirely.
+	delInfo, err := Enqueue(ctx, c, clArgs{N: 11}, WithProcessIn(time.Hour))
+	if err != nil {
+		t.Fatalf("enqueue delete-target: %v", err)
+	}
+	if err := insp.DeleteTask(ctx, "default", delInfo.ID); err != nil {
+		t.Fatalf("DeleteTask: %v", err)
+	}
+	if _, err := insp.GetTask(ctx, "default", delInfo.ID); !errors.Is(err, ErrTaskNotFound) {
+		t.Errorf("GetTask after delete: err = %v, want ErrTaskNotFound", err)
+	}
+}
+
+func TestCluster_InspectorQueries(t *testing.T) {
+	client := testutil.NewClusterRedis(t)
+	c := NewClient(client)
+	defer c.Close()
+	ctx := context.Background()
+
+	if _, err := Enqueue(ctx, c, clArgs{N: 12}, WithProcessIn(time.Hour)); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	insp := NewInspector(client)
+
+	qs, err := insp.Queues(ctx) // Queues (SMembers) + QueueStats per queue
+	if err != nil {
+		t.Fatalf("queues: %v", err)
+	}
+	var found bool
+	for _, q := range qs {
+		if q.Queue == "default" && q.Scheduled == 1 {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("queue stats wrong: %+v", qs)
+	}
+
+	tasks, err := insp.ListTasks(ctx, "default", "scheduled", 10) // ListZSetTasks
+	if err != nil || len(tasks) != 1 {
+		t.Fatalf("list: n=%d err=%v", len(tasks), err)
+	}
+	ti := tasks[0]
+	if ti.Kind != "cluster:demo" || ti.State != "scheduled" || ti.NextProcessAt.IsZero() {
+		t.Errorf("task fields wrong: %+v", ti)
+	}
+	got, err := insp.GetTask(ctx, "default", ti.ID) // GetTask + ZScore
+	if err != nil || got.ID != ti.ID {
+		t.Errorf("GetTask: got=%+v err=%v", got, err)
+	}
+}
+
+func TestCluster_TwoQueuesDifferentSlots(t *testing.T) {
+	client := testutil.NewClusterRedis(t)
+	c := NewClient(client)
+	defer c.Close()
+	ctx := context.Background()
+
+	// Prove the two queues really live on different slots — otherwise this
+	// test would silently stop covering MOVED redirects if names change.
+	const q1, q2 = "alpha", "bravo"
+	slot1, err := client.ClusterKeySlot(ctx, "chronos:{"+q1+"}:stream").Result()
+	if err != nil {
+		t.Fatalf("keyslot: %v", err)
+	}
+	slot2, err := client.ClusterKeySlot(ctx, "chronos:{"+q2+"}:stream").Result()
+	if err != nil {
+		t.Fatalf("keyslot: %v", err)
+	}
+	if slot1 == slot2 {
+		t.Fatalf("queues %q and %q hash to the same slot (%d); pick different names", q1, q2, slot1)
+	}
+
+	var n1, n2 atomic.Int32
+	mux := NewMux()
+	AddHandler(mux, func(ctx context.Context, task *Task[clArgs]) error {
+		if task.Args.N == 1 {
+			n1.Add(1)
+		} else {
+			n2.Add(1)
+		}
+		return nil
+	})
+	cfg := ServerConfig{
+		Queues:          map[string]int{q1: 1, q2: 1},
+		Concurrency:     4,
+		ForwardInterval: 200 * time.Millisecond,
+	}
+	srv := NewServer(client, cfg)
+	if err := srv.Start(ctx, mux); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	for i := 0; i < 3; i++ {
+		if _, err := Enqueue(ctx, c, clArgs{N: 1}, WithQueue(q1)); err != nil {
+			t.Fatalf("enqueue q1: %v", err)
+		}
+		if _, err := Enqueue(ctx, c, clArgs{N: 2}, WithQueue(q2)); err != nil {
+			t.Fatalf("enqueue q2: %v", err)
+		}
+	}
+	waitFor(t, 10*time.Second, "both slots' queues fully processed", func() bool {
+		return n1.Load() == 3 && n2.Load() == 3
+	})
 }
