@@ -196,6 +196,11 @@ chronos-go is a headless library, so it ships tools to *see* what it is doing:
   cd contrib/prometheus/deploy && docker compose up --build
   # Grafana: http://localhost:3000  (dashboard "chronos-go")
   ```
+- **Web console** — a browser task-management UI (inspect dead-letters, re-run /
+  delete) in [`contrib/webui`](contrib/webui):
+  ```bash
+  cd contrib/webui && go run ./cmd/webui
+  ```
 
 See [`docs/OBSERVING.md`](docs/OBSERVING.md) for Redis-level inspection.
 
