@@ -85,3 +85,24 @@ func readBody(t *testing.T, resp *http.Response) string {
 	}
 	return string(b)
 }
+
+func TestQueueDetail_ListsScheduledTask(t *testing.T) {
+	client := newTestRedis(t)
+	id := seedScheduled(t, client)
+
+	srv := httptest.NewServer(Handler(chronos.NewInspector(client)))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/queues/default?state=scheduled")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	body := readBody(t, resp)
+	if !strings.Contains(body, id) {
+		t.Errorf("queue detail missing task id %q:\n%s", id, body)
+	}
+}
