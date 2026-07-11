@@ -239,7 +239,8 @@ chronos --cluster --redis node1:6379,node2:6379 queue ls
 Notes:
 - Redis Cluster has only logical database 0 (`--db` is standalone-only).
 - The global keys (`chronos:queues`, the scheduler leader lock) are accessed
-  with single-key commands only, so they are cluster-safe without a hash tag.
+  with single-key commands or single-key Lua scripts only, so they are
+  cluster-safe without a hash tag.
 - Sentinel: inject a `redis.NewFailoverClient` — it satisfies the same
   `redis.UniversalClient` interface — but Sentinel is not part of our tested
   matrix yet.

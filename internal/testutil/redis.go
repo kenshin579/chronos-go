@@ -52,8 +52,9 @@ func NewRedis(t *testing.T) redis.UniversalClient {
 
 // NewClusterRedis connects to a disposable test Redis Cluster listed in
 // REDIS_CLUSTER_ADDRS (comma-separated seed addresses, e.g. the cluster from
-// deploy/redis-cluster). It skips the test when the variable is unset or the
-// cluster is unreachable, flushes every master before the test, and cleans up
+// deploy/redis-cluster). It skips the test when the variable is unset and
+// fails it when the variable is set but the cluster is unreachable, flushes
+// every master before the test, and cleans up
 // afterwards. Unlike NewRedis there is no DB selection: Redis Cluster has only
 // logical database 0, so the cluster must be dedicated to tests.
 func NewClusterRedis(t *testing.T) redis.UniversalClient {
@@ -64,11 +65,13 @@ func NewClusterRedis(t *testing.T) redis.UniversalClient {
 		t.Skip("REDIS_CLUSTER_ADDRS not set; skipping cluster integration test")
 	}
 
-	client := redis.NewClusterClient(&redis.ClusterOptions{Addrs: strings.Split(addrs, ",")})
+	client := redis.NewClusterClient(&redis.ClusterOptions{Addrs: splitAddrs(addrs)})
 	ctx := context.Background()
 	if err := client.Ping(ctx).Err(); err != nil {
 		_ = client.Close()
-		t.Skipf("redis cluster not reachable at %s: %v", addrs, err)
+		// The env var is an explicit statement that a cluster should be there
+		// (e.g. make test-cluster): failing loudly beats a false-green skip.
+		t.Fatalf("REDIS_CLUSTER_ADDRS=%s set but cluster unreachable: %v", addrs, err)
 	}
 
 	flush := func() error {
@@ -84,4 +87,17 @@ func NewClusterRedis(t *testing.T) redis.UniversalClient {
 		_ = client.Close()
 	})
 	return client
+}
+
+// splitAddrs splits a comma-separated address list, trimming whitespace and
+// dropping empty entries.
+func splitAddrs(s string) []string {
+	parts := strings.Split(s, ",")
+	addrs := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			addrs = append(addrs, p)
+		}
+	}
+	return addrs
 }

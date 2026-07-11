@@ -51,9 +51,26 @@ func buildClient(standalone, cluster bool, addr string, db int) (redis.Universal
 		if db != 0 {
 			return nil, errors.New("--db is not supported with --cluster: Redis Cluster has only database 0")
 		}
-		return redis.NewClusterClient(&redis.ClusterOptions{Addrs: strings.Split(addr, ",")}), nil
+		addrs := splitAddrs(addr)
+		if len(addrs) == 0 {
+			return nil, errors.New("--cluster requires at least one seed address in --redis")
+		}
+		return redis.NewClusterClient(&redis.ClusterOptions{Addrs: addrs}), nil
 	}
 	return redis.NewClient(&redis.Options{Addr: addr, DB: db}), nil
+}
+
+// splitAddrs splits a comma-separated address list, trimming whitespace and
+// dropping empty entries.
+func splitAddrs(s string) []string {
+	parts := strings.Split(s, ",")
+	addrs := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			addrs = append(addrs, p)
+		}
+	}
+	return addrs
 }
 
 func envOr(key, def string) string {

@@ -317,11 +317,11 @@ func TestCluster_HeartbeatLongTask(t *testing.T) {
 	mux := NewMux()
 	AddHandler(mux, func(ctx context.Context, task *Task[clArgs]) error {
 		runs.Add(1)
-		time.Sleep(2 * time.Second) // longer than RecoverMinIdle
+		time.Sleep(4 * time.Second) // longer than RecoverMinIdle
 		return nil
 	})
 	cfg := clusterServerConfig("hbq")
-	cfg.RecoverMinIdle = 700 * time.Millisecond
+	cfg.RecoverMinIdle = 1500 * time.Millisecond
 	cfg.RecoverInterval = 300 * time.Millisecond
 	cfg.HeartbeatInterval = 200 * time.Millisecond
 	srv := NewServer(client, cfg)
@@ -333,7 +333,7 @@ func TestCluster_HeartbeatLongTask(t *testing.T) {
 	if _, err := Enqueue(ctx, c, clArgs{N: 9}, WithQueue("hbq")); err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
-	time.Sleep(3 * time.Second) // processing window + recoverer chances
+	time.Sleep(5500 * time.Millisecond) // 4s handler + recoverer chances afterwards
 	if n := runs.Load(); n != 1 {
 		t.Errorf("runs = %d, want 1 (heartbeat must keep the lease fresh)", n)
 	}
@@ -376,7 +376,10 @@ func TestCluster_JanitorTrimsArchived(t *testing.T) {
 		}
 		return 0
 	}
-	waitFor(t, 10*time.Second, "tasks archived", func() bool { return archivedCount() == 3 })
+	// >=1 proves the archive path ran; ==0 afterwards proves TrimArchived ran.
+	// (With a 1s retention a fast janitor may trim early tasks before the last
+	// one lands, so ==3 would be a momentary condition and flaky.)
+	waitFor(t, 10*time.Second, "tasks archived", func() bool { return archivedCount() >= 1 })
 	waitFor(t, 10*time.Second, "janitor trimmed archived", func() bool { return archivedCount() == 0 })
 }
 

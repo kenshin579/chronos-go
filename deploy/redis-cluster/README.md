@@ -1,8 +1,9 @@
 # Local Redis Cluster (integration testing)
 
 A disposable 6-node Redis Cluster (3 masters + 3 replicas, ports 7000-7005)
-for chronos-go's cluster integration tests. Data is NOT persisted — every
-`up` starts a fresh cluster.
+for chronos-go's cluster integration tests. Data is NOT persisted — a
+`down` + `up` starts a fresh cluster (a plain restart preserves the container
+layer and re-joins the existing cluster).
 
 ## Up / down
 

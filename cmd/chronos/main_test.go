@@ -44,6 +44,17 @@ func TestBuildClient_ModesAndErrors(t *testing.T) {
 	}
 	_ = cc.Close()
 
+	// 콤마 뒤 공백/빈 조각 허용
+	c, err = buildClient(false, true, " n1:7000 , n2:7001 ,", 0)
+	if err != nil {
+		t.Fatalf("cluster with spaces: %v", err)
+	}
+	_ = c.Close()
+	// 빈 주소 목록은 에러
+	if _, err := buildClient(false, true, " , ", 0); err == nil {
+		t.Error("cluster with empty addrs: want error, got nil")
+	}
+
 	// 상호 배타
 	if _, err := buildClient(true, true, "x:1", 0); err == nil {
 		t.Error("standalone+cluster: want error, got nil")
