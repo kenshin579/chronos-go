@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
 	"github.com/kenshin579/chronos-go/internal/base"
 	"github.com/kenshin579/chronos-go/internal/testutil"
 )
@@ -163,6 +165,75 @@ func TestDone_TrimsStreamEntry(t *testing.T) {
 	// After Done the stream must be empty (entry deleted, not just acked).
 	if n, _ := client.XLen(ctx, base.StreamKey("default")).Result(); n != 0 {
 		t.Errorf("stream len after Done = %d, want 0 (entry must be XDEL'd)", n)
+	}
+}
+
+func TestDone_RetentionMovesToCompleted(t *testing.T) {
+	client := testutil.NewRedis(t)
+	r := NewRDB(client)
+	ctx := context.Background()
+
+	msg := &base.TaskMessage{ID: "c1", Kind: "k", Queue: "default", Retention: 3600}
+	if err := r.Enqueue(ctx, msg); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if err := r.EnsureGroup(ctx, "default"); err != nil {
+		t.Fatalf("group: %v", err)
+	}
+	got, streamID, err := r.Dequeue(ctx, "w1", -1, "default")
+	if err != nil {
+		t.Fatalf("dequeue: %v", err)
+	}
+
+	before := time.Now().Unix()
+	if err := r.Done(ctx, "default", streamID, got); err != nil {
+		t.Fatalf("done: %v", err)
+	}
+
+	score, err := client.ZScore(ctx, base.CompletedKey("default"), "c1").Result()
+	if err != nil {
+		t.Fatalf("zscore: %v", err)
+	}
+	wantMin := float64(before + 3600)
+	if score < wantMin || score > wantMin+5 {
+		t.Errorf("score = %v, want ~%v (completedAt+retention)", score, wantMin)
+	}
+	stored, err := r.GetTask(ctx, "default", "c1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if stored.State != base.StateCompleted || stored.CompletedAt < before {
+		t.Errorf("state=%v completedAt=%d, want completed/>=%d", stored.State, stored.CompletedAt, before)
+	}
+	if xlen, _ := client.XLen(ctx, base.StreamKey("default")).Result(); xlen != 0 {
+		t.Errorf("stream len = %d, want 0", xlen)
+	}
+}
+
+func TestDone_NoRetentionDeletesImmediately(t *testing.T) {
+	client := testutil.NewRedis(t)
+	r := NewRDB(client)
+	ctx := context.Background()
+
+	msg := &base.TaskMessage{ID: "c2", Kind: "k", Queue: "default"} // Retention 0
+	if err := r.Enqueue(ctx, msg); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if err := r.EnsureGroup(ctx, "default"); err != nil {
+		t.Fatalf("group: %v", err)
+	}
+	got, streamID, err := r.Dequeue(ctx, "w1", -1, "default")
+	if err != nil {
+		t.Fatalf("dequeue: %v", err)
+	}
+	if err := r.Done(ctx, "default", streamID, got); err != nil {
+		t.Fatalf("done: %v", err)
+	}
+	if _, err := r.GetTask(ctx, "default", "c2"); err != redis.Nil {
+		t.Errorf("task hash should be deleted, got err=%v", err)
+	}
+	if n, _ := client.ZCard(ctx, base.CompletedKey("default")).Result(); n != 0 {
+		t.Errorf("completed zset should be empty, got %d", n)
 	}
 }
 
