@@ -60,11 +60,16 @@ type ChainLink struct {
 	Queue     string `json:"queue"`
 	MaxRetry  int    `json:"max_retry"`
 	NoArchive bool   `json:"no_archive,omitempty"`
-	Retention int64  `json:"retention,omitempty"`  // seconds
-	UniqueTTL int64  `json:"unique_ttl,omitempty"` // seconds
-	Delay     int64  `json:"delay,omitempty"`      // seconds (WithProcessIn)
+	Retention int64  `json:"retention,omitempty"` // seconds
+	Delay     int64  `json:"delay,omitempty"`     // seconds (WithProcessIn)
 }
 ```
+
+> **unique 제외 결정(스펙 확정 중 단순화)**: 체인 링크에서 `WithUnique`는
+> **명시적 에러로 거부**한다. unique 락 획득(SET NX PX)과 create-if-absent
+> 가드를 원자적으로 결합하기 어렵고(비원자 조합은 크래시 타이밍에 체인 유실
+> 또는 중복 실행 창을 만든다), 결정적 체인 ID가 이미 체인 내부 중복을 막으므로
+> 남는 것은 외부 enqueue와의 dedup뿐인 니치 케이스다. 필요해지면 후속으로.
 
 - `TaskMessage`에 추가: `Chain []ChainLink json:"chain,omitempty"` +
   `ChainID string json:"chain_id,omitempty"` + `ChainIndex int json:"chain_index,omitempty"`.
@@ -108,11 +113,10 @@ return 1
 - v0.5.0의 "재enqueue 시 잔존 completed/archived ZREM 정리"와 의도적으로 다름:
   체인 후속 enqueue는 **순수 create-if-absent** — 후속이 이미 완료·보관 중이면
   재실행하지 않는 것이 올바른 동작(중복 방지가 목적).
-- `Delay > 0` 링크는 scheduled ZSET 버전으로(동일 EXISTS 가드).
-- `UniqueTTL > 0` 링크는 기존 unique 경로에 EXISTS 가드를 결합(구현 시
-  기존 uniqueEnqueueCmd 변형 또는 호출 전 EXISTS 체크 — 원자성 유지 필수).
-- rdb 공개 함수: `EnqueueChainLink(ctx, msg *base.TaskMessage, link 파라미터...)
-  (enqueued bool, err error)` 형태(정확한 시그니처는 구현 시).
+- `Delay > 0` 링크는 scheduled ZSET 버전으로(동일 EXISTS 가드, 별도 스크립트).
+- unique 링크는 지원하지 않음(위 B의 제외 결정 — Then 옵션에서 에러).
+- rdb 공개 함수: `EnqueueChainLink(ctx, msg *base.TaskMessage, delay time.Duration)
+  (enqueued bool, err error)`.
 
 ### E. 관찰 / 노출
 
