@@ -20,6 +20,7 @@ package chronos
 //  [x] runTaskCmd / deleteTask (Inspector)                  → TestCluster_InspectorRunAndDelete
 //  [x] QueueStats/Queues/ListZSetTasks/GetTask              → TestCluster_InspectorQueries
 //  [x] two queues on different slots (MOVED redirects)      → TestCluster_TwoQueuesDifferentSlots
+//  [x] Done retention (moveToZSetCmd) + TrimCompleted       → TestCluster_CompletedRetention
 
 import (
 	"context"
@@ -512,5 +513,42 @@ func TestCluster_TwoQueuesDifferentSlots(t *testing.T) {
 	}
 	waitFor(t, 10*time.Second, "both slots' queues fully processed", func() bool {
 		return n1.Load() == 3 && n2.Load() == 3
+	})
+}
+
+func TestCluster_CompletedRetention(t *testing.T) {
+	client := testutil.NewClusterRedis(t)
+	c := NewClient(client)
+	defer c.Close()
+	ctx := context.Background()
+
+	var done atomic.Int32
+	mux := NewMux()
+	AddHandler(mux, func(ctx context.Context, task *Task[clArgs]) error {
+		done.Add(1)
+		return nil
+	})
+	cfg := clusterServerConfig("retq")
+	cfg.JanitorInterval = 300 * time.Millisecond
+	srv := NewServer(client, cfg)
+	if err := srv.Start(ctx, mux); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	// Done retention (moveToZSetCmd): 성공 후 completed에 보관된다.
+	info, err := Enqueue(ctx, c, clArgs{N: 13}, WithQueue("retq"), WithRetention(time.Second))
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	insp := NewInspector(client)
+	waitFor(t, 5*time.Second, "task retained as completed", func() bool {
+		got, gerr := insp.GetTask(ctx, "retq", info.ID)
+		return gerr == nil && got.State == "completed"
+	})
+	// TrimCompleted: retention(1s) 경과 후 janitor가 정리한다.
+	waitFor(t, 10*time.Second, "completed task trimmed", func() bool {
+		_, gerr := insp.GetTask(ctx, "retq", info.ID)
+		return gerr != nil
 	})
 }

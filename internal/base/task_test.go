@@ -66,6 +66,27 @@ func TestTaskMessage_UniqueKey_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestTaskMessage_RetentionRoundTrips(t *testing.T) {
+	msg := &TaskMessage{ID: "t2", Kind: "k", Queue: "default", Retention: 3600, CompletedAt: 1700000000}
+	encoded, err := EncodeMessage(msg)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	got, err := DecodeMessage(encoded)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Retention != 3600 || got.CompletedAt != 1700000000 {
+		t.Errorf("Retention=%d CompletedAt=%d, want 3600/1700000000", got.Retention, got.CompletedAt)
+	}
+}
+
+func TestCompletedKey(t *testing.T) {
+	if got, want := CompletedKey("q1"), "chronos:{q1}:completed"; got != want {
+		t.Errorf("CompletedKey = %q, want %q", got, want)
+	}
+}
+
 func TestTaskState_String(t *testing.T) {
 	if StateActive.String() != "active" {
 		t.Errorf("StateActive.String() = %q, want %q", StateActive.String(), "active")

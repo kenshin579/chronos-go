@@ -100,6 +100,10 @@ type ServerConfig struct {
 	// deletes the oldest beyond this even within the retention window. Defaults
 	// to 10000. Set negative to disable the size cap.
 	MaxArchived int
+	// MaxCompleted caps the number of retained completed tasks per queue; the
+	// janitor deletes the oldest beyond this even before their retention
+	// expires. Defaults to 10000. Set negative to disable the size cap.
+	MaxCompleted int
 	// JanitorInterval is how often the janitor runs. Defaults to 1 minute.
 	JanitorInterval time.Duration
 }
@@ -165,6 +169,9 @@ func NewServer(r redis.UniversalClient, cfg ServerConfig) *Server {
 	}
 	if cfg.MaxArchived == 0 {
 		cfg.MaxArchived = 10000
+	}
+	if cfg.MaxCompleted == 0 {
+		cfg.MaxCompleted = 10000
 	}
 	if cfg.JanitorInterval <= 0 {
 		cfg.JanitorInterval = 1 * time.Minute
@@ -384,6 +391,7 @@ func (s *Server) process(ctx context.Context, qname, streamID string, msg *base.
 
 	msg.Retried++
 	msg.LastErr = err.Error()
+	msg.CompletedAt = 0 // a re-run task that fails must not show a stale completion time
 	retryAt := time.Now().Add(s.cfg.RetryDelayFunc(msg.Retried, err))
 	if rerr := s.rdb.Retry(opCtx, qname, streamID, msg, retryAt); rerr != nil {
 		s.logger.Error("chronos: retry scheduling failed", "id", msg.ID, "error", rerr)
@@ -472,7 +480,9 @@ func (s *Server) dispatchSafely(ctx context.Context, msg *base.TaskMessage) (err
 // the OnDeadLetter hook.
 func (s *Server) deadLetter(ctx context.Context, qname, streamID string, msg *base.TaskMessage, cause error) {
 	msg.LastErr = cause.Error()
+	msg.CompletedAt = 0 // a re-run task that fails must not show a stale completion time
 	if msg.NoArchive {
+		msg.Retention = 0 // a discarded failure is not a success — never retain as completed
 		if derr := s.rdb.Done(ctx, qname, streamID, msg); derr != nil {
 			s.logger.Error("chronos: discard failed", "id", msg.ID, "error", derr)
 		}
@@ -547,10 +557,11 @@ func (s *Server) recovererLoop(ctx context.Context) {
 	}
 }
 
-// janitorLoop periodically deletes expired / over-capacity archived tasks from
-// each queue. Removals are atomic, batched, and idempotent, so running it on
-// every server instance is safe. A negative MaxArchived disables the size cap
-// (handled by TrimArchived).
+// janitorLoop periodically deletes expired / over-capacity archived tasks and
+// retained-completed tasks from each queue. Removals are atomic, batched, and
+// idempotent, so running it on every server instance is safe. A negative
+// MaxArchived / MaxCompleted disables the corresponding size cap (handled by
+// TrimArchived / TrimCompleted).
 func (s *Server) janitorLoop(ctx context.Context) {
 	defer s.wg.Done()
 	ticker := time.NewTicker(s.cfg.JanitorInterval)
@@ -573,6 +584,17 @@ func (s *Server) janitorLoop(ctx context.Context) {
 				}
 				if n > 0 {
 					s.logger.Debug("chronos: janitor trimmed archived", "queue", q, "removed", n)
+				}
+				nc, err := s.rdb.TrimCompleted(ctx, q, time.Now(), s.cfg.MaxCompleted, janitorBatchSize)
+				if err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					s.logger.Error("chronos: janitor trim completed failed", "queue", q, "error", err)
+					continue
+				}
+				if nc > 0 {
+					s.logger.Debug("chronos: janitor trimmed completed", "queue", q, "removed", nc)
 				}
 			}
 		}

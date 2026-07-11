@@ -36,8 +36,8 @@ long processing.
   higher-weight queues first.
 - **Heartbeat** — refreshes the lease and unique lock of in-flight tasks, so a
   long-running task is neither reclaimed nor loses its lock mid-processing.
-- **Self-cleaning** — a janitor trims dead-lettered tasks by age and count, so
-  Redis memory stays bounded.
+- **Self-cleaning** — a janitor trims dead-lettered and retained-completed
+  tasks by age and count, so Redis memory stays bounded.
 - **Observable** — an `Inspector` API + a `chronos` CLI, a runnable tour, and a
   Prometheus + Grafana stack in `contrib/prometheus`.
 
@@ -117,12 +117,14 @@ chronos.Enqueue(ctx, client, EmailArgs{...},
 	chronos.WithProcessIn(30*time.Minute),   // run later (delayed)
 	chronos.WithUnique(10*time.Minute),      // dedup identical (kind+payload) tasks
 	chronos.WithDeadLetterDiscard(),         // drop instead of archive on exhaustion
+	chronos.WithRetention(24*time.Hour),     // keep the completed task for inspection
 )
 ```
 
 ### Handler outcomes
 
-- return `nil` → success (acked and removed).
+- return `nil` → success (acked and removed — or kept for `WithRetention` for
+  later inspection).
 - return an `error` → retried with backoff until `MaxRetry` is exhausted, then
   dead-lettered.
 - return `chronos.SkipRetry(err)` → dead-lettered immediately (permanent error).
@@ -186,6 +188,7 @@ chronos-go is a headless library, so it ships tools to *see* what it is doing:
   ```bash
   go run ./cmd/chronos queue ls
   go run ./cmd/chronos task ls default archived
+  go run ./cmd/chronos task ls default completed  # inspect retained successes
   go run ./cmd/chronos task run default <id>   # re-run a dead-letter
   go run ./cmd/chronos task rm  default <id>
   ```
@@ -278,7 +281,7 @@ crashes after finishing but before acking). **Make handlers idempotent.**
 - The unique lock is heartbeat-renewed only while a task is *actively
   processing*; while it waits in the scheduled/retry set, it is covered by its
   TTL — set the TTL comfortably above expected waiting time.
-- Not yet built: completed-task retention, a web UI, workflows (chains/groups).
+- Not yet built: a web UI, workflows (chains/groups).
 
 ## Development
 

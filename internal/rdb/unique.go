@@ -17,7 +17,11 @@ var ErrDuplicateTask = errors.New("chronos: duplicate task")
 // enqueueUniqueCmd acquires the unique lock (SET NX PX) and, only on success,
 // stores the task and appends it to the stream — atomically. Returns -1 when
 // the lock is already held. TTL is milliseconds (PX) so sub-second TTLs work.
-// KEYS[1] unique lock, KEYS[2] task hash, KEYS[3] stream.
+// On success it also clears any stale completed/archived ZSET entry left by a
+// previous task with the same ID — otherwise the janitor would later delete the
+// new task's hash when the stale entry expires.
+// KEYS[1] unique lock, KEYS[2] task hash, KEYS[3] stream,
+// KEYS[4] completed zset, KEYS[5] archived zset.
 // ARGV[1] taskID, ARGV[2] ttl millis, ARGV[3] encoded msg, ARGV[4] state.
 var enqueueUniqueCmd = redis.NewScript(`
 if redis.call("SET", KEYS[1], ARGV[1], "NX", "PX", tonumber(ARGV[2])) == false then
@@ -25,12 +29,16 @@ if redis.call("SET", KEYS[1], ARGV[1], "NX", "PX", tonumber(ARGV[2])) == false t
 end
 redis.call("HSET", KEYS[2], "msg", ARGV[3], "state", ARGV[4])
 redis.call("XADD", KEYS[3], "*", "task_id", ARGV[1])
+redis.call("ZREM", KEYS[4], ARGV[1])
+redis.call("ZREM", KEYS[5], ARGV[1])
 return 1
 `)
 
 // scheduleUniqueCmd is enqueueUniqueCmd's delayed counterpart: on lock success
-// it stores the task and adds it to the scheduled ZSET.
-// KEYS[1] unique lock, KEYS[2] task hash, KEYS[3] scheduled zset.
+// it stores the task, adds it to the scheduled ZSET, and clears any stale
+// completed/archived ZSET entry for the same ID.
+// KEYS[1] unique lock, KEYS[2] task hash, KEYS[3] scheduled zset,
+// KEYS[4] completed zset, KEYS[5] archived zset.
 // ARGV[1] taskID, ARGV[2] ttl millis, ARGV[3] encoded msg, ARGV[4] state, ARGV[5] score.
 var scheduleUniqueCmd = redis.NewScript(`
 if redis.call("SET", KEYS[1], ARGV[1], "NX", "PX", tonumber(ARGV[2])) == false then
@@ -38,6 +46,8 @@ if redis.call("SET", KEYS[1], ARGV[1], "NX", "PX", tonumber(ARGV[2])) == false t
 end
 redis.call("HSET", KEYS[2], "msg", ARGV[3], "state", ARGV[4])
 redis.call("ZADD", KEYS[3], ARGV[5], ARGV[1])
+redis.call("ZREM", KEYS[4], ARGV[1])
+redis.call("ZREM", KEYS[5], ARGV[1])
 return 1
 `)
 
@@ -65,7 +75,10 @@ func (r *RDB) EnqueueUnique(ctx context.Context, msg *base.TaskMessage, uniqueTT
 	if err := r.client.SAdd(ctx, base.QueuesKey(), msg.Queue).Err(); err != nil {
 		return err
 	}
-	keys := []string{msg.UniqueKey, base.TaskKey(msg.Queue, msg.ID), base.StreamKey(msg.Queue)}
+	keys := []string{
+		msg.UniqueKey, base.TaskKey(msg.Queue, msg.ID), base.StreamKey(msg.Queue),
+		base.CompletedKey(msg.Queue), base.ArchivedKey(msg.Queue),
+	}
 	argv := []interface{}{msg.ID, uniqueTTLMillis(uniqueTTL), encoded, int(base.StatePending)}
 	res, err := enqueueUniqueCmd.Run(ctx, r.client, keys, argv...).Int()
 	if err != nil {
@@ -88,7 +101,10 @@ func (r *RDB) ScheduleUnique(ctx context.Context, msg *base.TaskMessage, process
 	if err := r.client.SAdd(ctx, base.QueuesKey(), msg.Queue).Err(); err != nil {
 		return err
 	}
-	keys := []string{msg.UniqueKey, base.TaskKey(msg.Queue, msg.ID), base.ScheduledKey(msg.Queue)}
+	keys := []string{
+		msg.UniqueKey, base.TaskKey(msg.Queue, msg.ID), base.ScheduledKey(msg.Queue),
+		base.CompletedKey(msg.Queue), base.ArchivedKey(msg.Queue),
+	}
 	argv := []interface{}{msg.ID, uniqueTTLMillis(uniqueTTL), encoded, int(base.StateScheduled), scheduleScore(processAt)}
 	res, err := scheduleUniqueCmd.Run(ctx, r.client, keys, argv...).Int()
 	if err != nil {

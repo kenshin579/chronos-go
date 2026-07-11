@@ -9,7 +9,7 @@ import (
 	"github.com/kenshin579/chronos-go/internal/base"
 )
 
-// trimArchivedCmd deletes archived tasks in two passes: (1) by age — entries
+// trimArchivedCmd deletes tasks referenced by a state ZSET in two passes (shared by TrimArchived and TrimCompleted): (1) by age — entries
 // with score (died-at) <= cutoff, and (2) by size — if the ZSET still exceeds
 // maxSize, the oldest excess entries. Both passes are bounded by the same batch
 // (ARGV[2]) so a single script stays short even with a huge backlog (it converges
@@ -60,6 +60,22 @@ return removed
 func (r *RDB) TrimArchived(ctx context.Context, qname string, cutoff time.Time, maxSize, batch int) (int, error) {
 	keys := []string{base.ArchivedKey(qname)}
 	argv := []interface{}{cutoff.Unix(), batch, base.TaskKeyPrefix(qname), maxSize}
+	n, err := trimArchivedCmd.Run(ctx, r.client, keys, argv...).Int()
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// TrimCompleted removes retained completed tasks whose expiry (the ZSET score,
+// completed-at + retention) has passed, and any that still exceed maxSize
+// (oldest first). It reuses trimArchivedCmd: the script is generic over the
+// ZSET — only the key and the cutoff semantics differ (here the score already
+// IS the expiry, so the cutoff is simply "now"). Batch/negative-maxSize rules
+// match TrimArchived. Completed tasks hold no unique lock (released in Done).
+func (r *RDB) TrimCompleted(ctx context.Context, qname string, now time.Time, maxSize, batch int) (int, error) {
+	keys := []string{base.CompletedKey(qname)}
+	argv := []interface{}{now.Unix(), batch, base.TaskKeyPrefix(qname), maxSize}
 	n, err := trimArchivedCmd.Run(ctx, r.client, keys, argv...).Int()
 	if err != nil {
 		return 0, err

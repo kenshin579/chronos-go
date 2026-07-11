@@ -45,6 +45,12 @@ func ArchivedKey(qname string) string {
 	return QueueKeyPrefix(qname) + "archived"
 }
 
+// CompletedKey returns the ZSET key holding successfully completed tasks that
+// are retained for inspection (score = expire-at, i.e. completed-at + retention).
+func CompletedKey(qname string) string {
+	return QueueKeyPrefix(qname) + "completed"
+}
+
 // ScheduledKey returns the ZSET key holding delayed tasks (score = process_at).
 func ScheduledKey(qname string) string {
 	return QueueKeyPrefix(qname) + "scheduled"

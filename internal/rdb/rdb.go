@@ -33,10 +33,16 @@ func (r *RDB) Client() redis.UniversalClient {
 }
 
 // enqueueCmd atomically stores the task body and appends its ID to the stream.
-// KEYS[1] task hash, KEYS[2] stream. ARGV[1] encoded msg, ARGV[2] state, ARGV[3] task id.
+// It also clears any stale completed/archived ZSET entry left by a previous task
+// with the same ID — otherwise the janitor would later delete the new task's hash
+// when the stale entry expires.
+// KEYS[1] task hash, KEYS[2] stream, KEYS[3] completed zset, KEYS[4] archived zset.
+// ARGV[1] encoded msg, ARGV[2] state, ARGV[3] task id.
 var enqueueCmd = redis.NewScript(`
 redis.call("HSET", KEYS[1], "msg", ARGV[1], "state", ARGV[2])
 redis.call("XADD", KEYS[2], "*", "task_id", ARGV[3])
+redis.call("ZREM", KEYS[3], ARGV[3])
+redis.call("ZREM", KEYS[4], ARGV[3])
 return 1
 `)
 
@@ -57,6 +63,8 @@ func (r *RDB) Enqueue(ctx context.Context, msg *base.TaskMessage) error {
 	keys := []string{
 		base.TaskKey(msg.Queue, msg.ID),
 		base.StreamKey(msg.Queue),
+		base.CompletedKey(msg.Queue),
+		base.ArchivedKey(msg.Queue),
 	}
 	argv := []interface{}{encoded, int(base.StatePending), msg.ID}
 	return enqueueCmd.Run(ctx, r.client, keys, argv...).Err()
@@ -158,10 +166,23 @@ end
 return 1
 `)
 
-// Done acknowledges a successfully processed task: it acks the stream entry,
-// deletes the task body, and releases the task's unique lock (if any). It takes
-// the full message so it can find the unique key.
+// Done acknowledges a successfully processed task. With no retention it acks
+// the stream entry, deletes the task body, and releases the unique lock (if
+// any). With msg.Retention > 0 it keeps the task in the completed ZSET until
+// completed-at + retention (the janitor removes it later); the unique lock is
+// still released immediately — a retained completed task must not block a new
+// identical enqueue.
 func (r *RDB) Done(ctx context.Context, qname, streamID string, msg *base.TaskMessage) error {
+	if msg.Retention > 0 {
+		now := time.Now()
+		msg.CompletedAt = now.Unix()
+		expireAt := now.Unix() + msg.Retention
+		if err := r.moveToZSet(ctx, qname, streamID, msg, base.CompletedKey(qname), base.StateCompleted, expireAt); err != nil {
+			return err
+		}
+		return r.releaseUnique(ctx, msg)
+	}
+
 	pipe := r.client.TxPipeline()
 	pipe.XAck(ctx, base.StreamKey(qname), ConsumerGroup, streamID)
 	pipe.XDel(ctx, base.StreamKey(qname), streamID)

@@ -2,7 +2,7 @@
 //
 //	chronos [--redis addr] [--db n] queue ls                       # standalone (default)
 //	chronos --cluster --redis n1:7000,n2:7001 queue ls             # Redis Cluster
-//	chronos [flags] task ls   <queue> <scheduled|retry|archived>
+//	chronos [flags] task ls   <queue> <scheduled|retry|archived|completed>
 //	chronos [flags] task run  <queue> <task-id>
 //	chronos [flags] task rm   <queue> <task-id>
 package main
@@ -124,9 +124,9 @@ func queueLs(ctx context.Context, insp *chronos.Inspector, out io.Writer) int {
 		return 1
 	}
 	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "QUEUE\tPENDING\tACTIVE\tSCHEDULED\tRETRY\tARCHIVED")
+	fmt.Fprintln(tw, "QUEUE\tPENDING\tACTIVE\tSCHEDULED\tRETRY\tARCHIVED\tCOMPLETED")
 	for _, q := range queues {
-		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\n", q.Queue, q.Pending, q.Active, q.Scheduled, q.Retry, q.Archived)
+		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\t%d\n", q.Queue, q.Pending, q.Active, q.Scheduled, q.Retry, q.Archived, q.Completed)
 	}
 	tw.Flush()
 	return 0

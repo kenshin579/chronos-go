@@ -16,7 +16,11 @@ import (
 // recorded on the task, so it is never released early — it expires by TTL only,
 // which is what fences a split-brain / late leader from re-enqueueing the same
 // trigger.
-// KEYS[1] dedup key, KEYS[2] task hash, KEYS[3] stream.
+// On success it also clears any stale completed/archived ZSET entry left by a
+// previous task with the same ID — otherwise the janitor would later delete the
+// new task's hash when the stale entry expires.
+// KEYS[1] dedup key, KEYS[2] task hash, KEYS[3] stream,
+// KEYS[4] completed zset, KEYS[5] archived zset.
 // ARGV[1] taskID, ARGV[2] dedup ttl millis, ARGV[3] encoded msg, ARGV[4] state.
 var enqueuePeriodicCmd = redis.NewScript(`
 if redis.call("SET", KEYS[1], "1", "NX", "PX", tonumber(ARGV[2])) == false then
@@ -24,6 +28,8 @@ if redis.call("SET", KEYS[1], "1", "NX", "PX", tonumber(ARGV[2])) == false then
 end
 redis.call("HSET", KEYS[2], "msg", ARGV[3], "state", ARGV[4])
 redis.call("XADD", KEYS[3], "*", "task_id", ARGV[1])
+redis.call("ZREM", KEYS[4], ARGV[1])
+redis.call("ZREM", KEYS[5], ARGV[1])
 return 1
 `)
 
@@ -43,7 +49,10 @@ func (r *RDB) EnqueuePeriodic(ctx context.Context, msg *base.TaskMessage, dedupK
 	if ms < 1 {
 		ms = 1
 	}
-	keys := []string{dedupKey, base.TaskKey(msg.Queue, msg.ID), base.StreamKey(msg.Queue)}
+	keys := []string{
+		dedupKey, base.TaskKey(msg.Queue, msg.ID), base.StreamKey(msg.Queue),
+		base.CompletedKey(msg.Queue), base.ArchivedKey(msg.Queue),
+	}
 	res, err := enqueuePeriodicCmd.Run(ctx, r.client, keys, msg.ID, ms, encoded, int(base.StatePending)).Int()
 	if err != nil {
 		return err
