@@ -7,6 +7,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/kenshin579/chronos-go/benchmarks/asynqbench"
 	"github.com/kenshin579/chronos-go/benchmarks/bench"
 	"github.com/kenshin579/chronos-go/benchmarks/chronosbench"
 )
@@ -46,6 +47,17 @@ func TestSmoke_ChronosE2E(t *testing.T) {
 		t.Fatalf("run: %v", err)
 	}
 	if r.Throughput <= 0 || r.P50 <= 0 || r.P99 < r.P50 {
+		t.Errorf("suspicious stats: %+v", r)
+	}
+}
+
+func TestSmoke_AsynqE2E(t *testing.T) {
+	cfg := benchConfig(t)
+	r, err := bench.Run(context.Background(), asynqbench.E2E(), cfg, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if r.Throughput <= 0 || r.P50 <= 0 {
 		t.Errorf("suspicious stats: %+v", r)
 	}
 }

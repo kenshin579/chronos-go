@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/kenshin579/chronos-go/benchmarks/asynqbench"
 	"github.com/kenshin579/chronos-go/benchmarks/bench"
 	"github.com/kenshin579/chronos-go/benchmarks/chronosbench"
 )
@@ -51,8 +52,7 @@ func main() {
 	}
 }
 
-// pick maps target×scenario to an implementation. asynq scenarios are wired in
-// a later task; until then they return an error.
+// pick maps target×scenario to an implementation.
 func pick(target, scenario string, chainLen, groupSize int) (bench.Scenario, error) {
 	switch target {
 	case "chronos":
@@ -67,7 +67,13 @@ func pick(target, scenario string, chainLen, groupSize int) (bench.Scenario, err
 			return chronosbench.Group(groupSize), nil
 		}
 	case "asynq":
-		return nil, fmt.Errorf("asynq scenarios not wired yet")
+		switch scenario {
+		case "enqueue":
+			return asynqbench.Enqueue(), nil
+		case "e2e":
+			return asynqbench.E2E(), nil
+		}
+		return nil, fmt.Errorf("asynq supports enqueue|e2e only")
 	}
 	return nil, fmt.Errorf("unknown target/scenario: %s/%s", target, scenario)
 }
