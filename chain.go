@@ -17,8 +17,11 @@ import (
 // every link carries its remaining tail inside its own message.
 //
 // Handlers must be idempotent, as everywhere in chronos-go: a redelivered link
-// may run its handler more than once, though its successor is enqueued at most
-// once (deterministic successor IDs + create-if-absent).
+// may run its handler more than once. Its successor is enqueued at most once
+// while that successor still exists; if a predecessor is redelivered after its
+// successor already finished and was not retained, the successor can be
+// recreated — the usual at-least-once caveat. Per-link WithRetention keeps the
+// successor's record around and closes that window for its duration.
 type Chain struct {
 	links []struct {
 		args TaskArgs
@@ -53,7 +56,7 @@ func (ch *Chain) Enqueue(ctx context.Context, c *Client) (*TaskInfo, error) {
 	// Snapshot links 1..n-1 as the first link's tail.
 	tail := make([]base.ChainLink, 0, len(ch.links)-1)
 	for i := 1; i < len(ch.links); i++ {
-		link, err := snapshotChainLink(ch.links[i].args, ch.links[i].opts)
+		link, err := snapshotChainLink(ch.links[i].args, ch.links[i].opts, i == len(ch.links)-1)
 		if err != nil {
 			return nil, fmt.Errorf("chain link %d: %w", i, err)
 		}
@@ -65,6 +68,9 @@ func (ch *Chain) Enqueue(ctx context.Context, c *Client) (*TaskInfo, error) {
 	options, err := resolveChainOptions(first.opts)
 	if err != nil {
 		return nil, fmt.Errorf("chain link 0: %w", err)
+	}
+	if len(ch.links) > 1 && options.noArchive {
+		return nil, fmt.Errorf("chain link 0: %w", errNoArchiveMidChain)
 	}
 	payload, err := encodeArgs(first.args)
 	if err != nil {
@@ -85,8 +91,12 @@ func (ch *Chain) Enqueue(ctx context.Context, c *Client) (*TaskInfo, error) {
 	if err := dispatchMessage(ctx, c, msg, options); err != nil {
 		return nil, err
 	}
-	return &TaskInfo{ID: msg.ID, Kind: msg.Kind, Queue: msg.Queue}, nil
+	return &TaskInfo{ID: msg.ID, Kind: msg.Kind, Queue: msg.Queue, ChainPending: len(tail)}, nil
 }
+
+// errNoArchiveMidChain: discarding a dead-lettered mid-link would delete the
+// chain's remaining tail with it, so there would be nothing left to resume.
+var errNoArchiveMidChain = errors.New("chronos: WithDeadLetterDiscard is only allowed on the last chain link (discarding a mid-link would delete the chain's remaining tail)")
 
 // resolveChainOptions applies opts and rejects the ones a chain cannot honor.
 func resolveChainOptions(opts []Option) (enqueueOptions, error) {
@@ -104,10 +114,16 @@ func resolveChainOptions(opts []Option) (enqueueOptions, error) {
 }
 
 // snapshotChainLink freezes a successor's enqueue parameters into a ChainLink.
-func snapshotChainLink(args TaskArgs, opts []Option) (base.ChainLink, error) {
+func snapshotChainLink(args TaskArgs, opts []Option, isLast bool) (base.ChainLink, error) {
 	o, err := resolveChainOptions(opts)
 	if err != nil {
 		return base.ChainLink{}, err
+	}
+	if o.processAtAbsolute {
+		return base.ChainLink{}, errors.New("chronos: WithProcessAt cannot be used on a chain link after the first (its delay is relative to the predecessor; use WithProcessIn)")
+	}
+	if o.noArchive && !isLast {
+		return base.ChainLink{}, errNoArchiveMidChain
 	}
 	payload, err := encodeArgs(args)
 	if err != nil {
@@ -118,7 +134,7 @@ func snapshotChainLink(args TaskArgs, opts []Option) (base.ChainLink, error) {
 		// WithProcessIn stored an absolute time; capture the intended relative
 		// delay (we are still inside the builder call, so the drift is tiny).
 		if d := time.Until(o.processAt); d > 0 {
-			delay = int64(d / time.Second)
+			delay = int64((d + time.Second/2) / time.Second)
 			if delay == 0 {
 				delay = 1
 			}

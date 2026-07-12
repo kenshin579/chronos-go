@@ -12,7 +12,9 @@ import (
 // chainEnqueueCmd enqueues a chain successor only if its task hash does not
 // already exist. The guard makes successor enqueueing idempotent: a
 // redelivered predecessor (at-least-once) re-runs its handler and re-attempts
-// this call, but cannot create a duplicate. Deliberately does NOT clear stale
+// this call, but cannot create a duplicate. (The guard holds only while the
+// successor's task hash exists — see the Chain doc comment for the
+// redelivery-after-completion caveat.) Deliberately does NOT clear stale
 // completed/archived entries (unlike enqueueCmd): if the successor already ran
 // and is retained, re-running it would be exactly the duplication this guard
 // exists to prevent. Keys share the queue hash tag (cluster-safe).

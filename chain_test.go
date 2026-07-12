@@ -29,6 +29,20 @@ func TestChain_BuilderValidation(t *testing.T) {
 	if _, err := NewChain().Then(emailArgs{UserID: "a"}, WithUnique(time.Minute)).Enqueue(ctx, c); err == nil {
 		t.Error("WithUnique in chain: want error")
 	}
+	// 꼬리 링크의 WithProcessAt → 에러 (의미가 달라짐; WithProcessIn을 쓸 것).
+	if _, err := NewChain().
+		Then(emailArgs{UserID: "a"}).
+		Then(emailArgs{UserID: "b"}, WithProcessAt(time.Now().Add(time.Hour))).
+		Enqueue(ctx, c); err == nil {
+		t.Error("WithProcessAt on tail link: want error")
+	}
+	// 마지막이 아닌 링크의 WithDeadLetterDiscard → 에러 (꼬리째 소실 방지).
+	if _, err := NewChain().
+		Then(emailArgs{UserID: "a"}, WithDeadLetterDiscard()).
+		Then(emailArgs{UserID: "b"}).
+		Enqueue(ctx, c); err == nil {
+		t.Error("WithDeadLetterDiscard on non-last link: want error")
+	}
 	// 링크 1개 → 정상.
 	info, err := NewChain().Then(emailArgs{UserID: "solo"}).Enqueue(ctx, c)
 	if err != nil {
@@ -184,6 +198,57 @@ func TestChain_StopsOnDeadLetterAndResumesViaRunTask(t *testing.T) {
 	for step3Runs.Load() == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("chain did not resume after RunTask")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestChain_RetainedLinkCarriesNoStaleTail(t *testing.T) {
+	client := testutil.NewRedis(t)
+	c := NewClient(client)
+	defer c.Close()
+	ctx := context.Background()
+
+	done := make(chan struct{}, 3)
+	mux := NewMux()
+	AddHandler(mux, func(ctx context.Context, task *Task[chainArgs]) error {
+		done <- struct{}{}
+		return nil
+	})
+	srv := NewServer(client, ServerConfig{Queues: map[string]int{"default": 1}, Concurrency: 1})
+	if err := srv.Start(ctx, mux); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	info, err := NewChain().
+		Then(chainArgs{Step: 1}, WithRetention(time.Hour)). // 보관되는 중간 링크
+		Then(chainArgs{Step: 2}).
+		Enqueue(ctx, c)
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	// 두 링크 모두 실행 완료 대기.
+	for i := 0; i < 2; i++ {
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("chain did not complete")
+		}
+	}
+	// 보관된 1단계는 꼬리를 갖지 않아야 한다 (이미 넘긴 링크를 광고/재생성 금지).
+	insp := NewInspector(client)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		got, gerr := insp.GetTask(ctx, "default", info.ID)
+		if gerr == nil && got.State == "completed" {
+			if got.ChainPending != 0 {
+				t.Fatalf("retained link ChainPending = %d, want 0 (tail already handed off)", got.ChainPending)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("link1 not retained as completed (err=%v)", gerr)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}

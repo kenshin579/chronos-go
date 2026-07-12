@@ -79,14 +79,15 @@ func (c *Client) Close() error { return nil }
 
 // enqueueOptions holds resolved enqueue-time settings.
 type enqueueOptions struct {
-	queue     string
-	taskID    string
-	maxRetry  int
-	noArchive bool
-	processAt time.Time     // zero = immediate
-	uniqueTTL time.Duration // > 0 enables unique deduplication
-	misfire   MisfirePolicy // used by scheduler registrations only
-	retention time.Duration // > 0 keeps the completed task for inspection
+	queue             string
+	taskID            string
+	maxRetry          int
+	noArchive         bool
+	processAt         time.Time     // zero = immediate
+	processAtAbsolute bool          // set by WithProcessAt (not WithProcessIn)
+	uniqueTTL         time.Duration // > 0 enables unique deduplication
+	misfire           MisfirePolicy // used by scheduler registrations only
+	retention         time.Duration // > 0 keeps the completed task for inspection
 }
 
 // Option customizes a single Enqueue call.
@@ -131,7 +132,10 @@ func WithDeadLetterDiscard() Option {
 // WithProcessAt schedules the task to first become available at t. A non-future
 // time enqueues immediately.
 func WithProcessAt(t time.Time) Option {
-	return optionFunc(func(o *enqueueOptions) { o.processAt = t })
+	return optionFunc(func(o *enqueueOptions) {
+		o.processAt = t
+		o.processAtAbsolute = true
+	})
 }
 
 // WithProcessIn schedules the task to first become available after d. A

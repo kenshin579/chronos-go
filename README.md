@@ -178,8 +178,11 @@ info, err := chronos.NewChain().
   dead-lettered, its successors wait inside the dead-letter (`ChainPending` in
   the Inspector shows how many). Re-run it (`chronos task run ...`) after fixing
   the cause and the chain resumes from that point.
-- Handlers must stay idempotent (at-least-once); successors themselves are
-  enqueued at most once (deterministic IDs + create-if-absent).
+- Handlers must stay idempotent (at-least-once). Successors are enqueued at
+  most once while their record exists; a predecessor redelivered after its
+  successor already finished (and was not retained) can recreate it — the
+  standard at-least-once caveat. Per-link `WithRetention` closes that window
+  for its duration.
 - Each link carries its remaining tail in its message, so very long chains grow
   the message size — keep chains reasonably short.
 
