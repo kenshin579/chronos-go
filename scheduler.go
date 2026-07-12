@@ -33,6 +33,7 @@ type SchedulerConfig struct {
 type scheduleEntry struct {
 	id        string // stable ID: "<kind>:<spec>"
 	kind      string
+	spec      string // human-readable schedule spec ("@every 30s" / cron 5-field)
 	payload   []byte
 	queue     string
 	maxRetry  int
@@ -89,7 +90,7 @@ func (s *Scheduler) register(spec string, sched cronSchedule, kind string, paylo
 	sum := sha256.Sum256(append([]byte(o.queue+"\x00"), payload...))
 	id := fmt.Sprintf("%s:%s#%x", kind, spec, sum[:8])
 	s.entries = append(s.entries, &scheduleEntry{
-		id: id, kind: kind, payload: payload, queue: o.queue,
+		id: id, kind: kind, spec: spec, payload: payload, queue: o.queue,
 		maxRetry: o.maxRetry, noArch: o.noArchive, misfire: o.misfire,
 		retention: o.retention, schedule: sched,
 	})
@@ -136,6 +137,14 @@ func RegisterCron[T TaskArgs](s *Scheduler, spec string, args T, opts ...Option)
 // trigger instant, so divergent timezones or badly skewed clocks could let two
 // instances treat the same logical trigger as different ones.
 func (s *Scheduler) Start(ctx context.Context) error {
+	// Publish this instance's schedules to the global registry so inspectors
+	// can list registered-but-never-fired schedules. Deterministic IDs make
+	// concurrent registration from many instances an idempotent overwrite.
+	// Failure is non-fatal: scheduling works without the registry.
+	if err := s.rdb.RegisterSchedules(ctx, s.scheduleMetas()); err != nil {
+		s.logger.Error("chronos: schedule registry write failed", "error", err)
+	}
+
 	runCtx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
 	s.wg.Add(1)
@@ -143,11 +152,35 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	return nil
 }
 
+// scheduleMetas snapshots the registered schedules as registry entries.
+func (s *Scheduler) scheduleMetas() []rdb.ScheduleMeta {
+	metas := make([]rdb.ScheduleMeta, 0, len(s.entries))
+	for _, e := range s.entries {
+		metas = append(metas, rdb.ScheduleMeta{ID: e.id, Kind: e.kind, Queue: e.queue, Spec: e.spec})
+	}
+	return metas
+}
+
+// scheduleIDs lists the registered schedule IDs (for registry heartbeats).
+func (s *Scheduler) scheduleIDs() []string {
+	ids := make([]string, 0, len(s.entries))
+	for _, e := range s.entries {
+		ids = append(ids, e.id)
+	}
+	return ids
+}
+
 // run drives leadership renewal and, while leader, the tick loop.
 func (s *Scheduler) run(ctx context.Context) {
 	defer s.wg.Done()
 
-	renew := time.NewTicker(s.cfg.LeaderTTL / 2)
+	// Renew at LeaderTTL/2, clamped to 20s so the registry heartbeat below
+	// always beats the Inspector's staleAfter (1 minute) even with a large TTL.
+	renewEvery := s.cfg.LeaderTTL / 2
+	if renewEvery > 20*time.Second {
+		renewEvery = 20 * time.Second
+	}
+	renew := time.NewTicker(renewEvery)
 	defer renew.Stop()
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
@@ -164,6 +197,11 @@ func (s *Scheduler) run(ctx context.Context) {
 			return
 		case <-renew.C:
 			s.tryElect(ctx)
+			// Registry heartbeat: refresh last_seen so inspectors can tell
+			// live schedules from stale leftovers. Best-effort.
+			if err := s.rdb.TouchSchedules(ctx, s.scheduleIDs()); err != nil && ctx.Err() == nil {
+				s.logger.Debug("chronos: schedule registry touch failed", "error", err)
+			}
 		case <-resign:
 			// A leader resigned; try to take over right away.
 			s.tryElect(ctx)

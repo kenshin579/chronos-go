@@ -2,6 +2,8 @@
 //
 //	chronos [--redis addr] [--db n] queue ls                       # standalone (default)
 //	chronos --cluster --redis n1:7000,n2:7001 queue ls             # Redis Cluster
+//	chronos [flags] queue pause  <queue>                            # stop consumption (~1s)
+//	chronos [flags] queue resume <queue>
 //	chronos [flags] task ls   <queue> <scheduled|retry|archived|completed>
 //	chronos [flags] task run  <queue> <task-id>
 //	chronos [flags] task rm   <queue> <task-id>
@@ -92,8 +94,28 @@ func run(args []string, client redis.UniversalClient, out io.Writer) int {
 
 	switch args[0] {
 	case "queue":
-		if len(args) >= 2 && args[1] == "ls" {
-			return queueLs(ctx, insp, out)
+		if len(args) >= 2 {
+			switch args[1] {
+			case "ls":
+				return queueLs(ctx, insp, out)
+			case "pause", "resume":
+				if len(args) < 3 {
+					fmt.Fprintf(out, "usage: chronos queue %s <queue>\n", args[1])
+					return 2
+				}
+				var err error
+				if args[1] == "pause" {
+					err = insp.PauseQueue(ctx, args[2])
+				} else {
+					err = insp.ResumeQueue(ctx, args[2])
+				}
+				if err != nil {
+					fmt.Fprintf(out, "error: %v\n", err)
+					return 1
+				}
+				fmt.Fprintf(out, "%sd %s\n", args[1], args[2])
+				return 0
+			}
 		}
 	case "task":
 		if len(args) >= 2 {
@@ -124,9 +146,13 @@ func queueLs(ctx context.Context, insp *chronos.Inspector, out io.Writer) int {
 		return 1
 	}
 	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "QUEUE\tPENDING\tACTIVE\tSCHEDULED\tRETRY\tARCHIVED\tCOMPLETED")
+	fmt.Fprintln(tw, "QUEUE\tPENDING\tACTIVE\tSCHEDULED\tRETRY\tARCHIVED\tCOMPLETED\tPAUSED")
 	for _, q := range queues {
-		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\t%d\n", q.Queue, q.Pending, q.Active, q.Scheduled, q.Retry, q.Archived, q.Completed)
+		paused := "-"
+		if q.Paused {
+			paused = "yes"
+		}
+		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s\n", q.Queue, q.Pending, q.Active, q.Scheduled, q.Retry, q.Archived, q.Completed, paused)
 	}
 	tw.Flush()
 	return 0

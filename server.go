@@ -20,6 +20,10 @@ import (
 // so Shutdown stays responsive.
 const pollBlock = 1 * time.Second
 
+// pauseCheckInterval bounds how often fetchLoop refreshes the paused-queue
+// set — pause/resume take effect within about this long.
+const pauseCheckInterval = time.Second
+
 // maxFetchBatch caps how many tasks one DequeueBatch claims, keeping a single
 // XREADGROUP (and the follow-up pipelines) short even at high Concurrency.
 const maxFetchBatch = 128
@@ -264,6 +268,30 @@ func (s *Server) fetchLoop(ctx context.Context) {
 	byWeight := s.queuesByWeight()
 	picker := newWRRPicker(s.cfg.Queues)
 	order := make([]string, 0, len(byWeight))
+	var (
+		paused        map[string]bool
+		pausedChecked time.Time
+	)
+	refreshPaused := func() {
+		if time.Since(pausedChecked) < pauseCheckInterval {
+			return
+		}
+		pausedChecked = time.Now()
+		names, err := s.rdb.PausedQueues(ctx)
+		if err != nil {
+			// A pause-lookup hiccup must not stop consumption; keep the last
+			// known set and try again next interval.
+			if ctx.Err() == nil {
+				s.logger.Error("chronos: paused-queue lookup failed", "error", err)
+			}
+			return
+		}
+		set := make(map[string]bool, len(names))
+		for _, q := range names {
+			set[q] = true
+		}
+		paused = set
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -288,6 +316,32 @@ func (s *Server) fetchLoop(ctx context.Context) {
 				if q != primary {
 					order = append(order, q)
 				}
+			}
+		}
+
+		// paused 큐는 이번 라운드에서 제외한다(소비만 중단 — enqueue/forwarding/
+		// recovery는 계속). 빈 paused 집합이면 order는 그대로다. WRR picker가
+		// paused primary를 뽑았다면 그 pick은 버려지지만 무해하다: 비블로킹
+		// 스윕이 나머지 큐를 모두 훑고, resume 시 SWRR 가중치는 정상 복귀한다.
+		refreshPaused()
+		if len(paused) > 0 {
+			kept := order[:0]
+			for _, q := range order {
+				if !paused[q] {
+					kept = append(kept, q)
+				}
+			}
+			order = kept
+			if len(order) == 0 {
+				// Every configured queue is paused — release the held slot,
+				// idle briefly, and re-check.
+				<-s.sem
+				select {
+				case <-time.After(pauseCheckInterval):
+				case <-ctx.Done():
+					return
+				}
+				continue
 			}
 		}
 

@@ -9,11 +9,18 @@
   <div class="label">SCHEDULES (fired at least once)</div>
   {{if .Sched.Schedules}}
   <table>
-    <tr><th>SCHEDULE ID</th><th>LAST FIRED</th></tr>
+    <tr><th>SCHEDULE ID</th><th>KIND</th><th>QUEUE</th><th>SPEC</th><th>LAST FIRED</th><th>LAST SEEN</th></tr>
     {{range .Sched.Schedules}}
-    <tr><td class="mono">{{.ID}}</td><td>{{if not .LastFired.IsZero}}{{.LastFired.Format "2006-01-02 15:04:05"}}{{else}}—{{end}}</td></tr>
+    <tr{{if .Stale}} class="stale"{{end}}>
+      <td class="mono">{{.ID}}</td>
+      <td>{{if .Kind}}{{.Kind}}{{else}}—{{end}}</td>
+      <td>{{if .Queue}}{{.Queue}}{{else}}—{{end}}</td>
+      <td class="mono">{{if .Spec}}{{.Spec}}{{else}}—{{end}}</td>
+      <td>{{if not .LastFired.IsZero}}{{.LastFired.Format "2006-01-02 15:04:05"}}{{else}}—{{end}}</td>
+      <td>{{if not .LastSeen.IsZero}}{{.LastSeen.Format "15:04:05"}}{{if .Stale}} <span class="badge b-paused">stale</span>{{end}}{{else}}—{{end}}</td>
+    </tr>
     {{end}}
   </table>
-  {{else}}<p class="muted">No schedule has fired yet. Registered-but-never-fired schedules are not visible.</p>{{end}}
+  {{else}}<p class="muted">No schedules known yet — start a Scheduler to populate the registry.</p>{{end}}
 </div>
 {{end}}

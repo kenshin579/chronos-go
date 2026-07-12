@@ -158,6 +158,13 @@ srv := chronos.NewServer(rdb, chronos.ServerConfig{
 With `StrictPriority: true`, higher-weight queues are always drained first; a
 lower-weight queue runs only while every higher one is empty.
 
+### Pausing a queue
+
+`Inspector.PauseQueue` (or `chronos queue pause <q>`, or the web console's
+⏸ toggle) stops servers from consuming a queue within about one second —
+enqueueing, forwarding and recovery continue, so work simply accumulates as
+pending until you resume. In-flight tasks finish normally.
+
 ## Chains
 
 Run tasks strictly in sequence — each link is enqueued only when the previous
@@ -235,6 +242,10 @@ defer sched.Shutdown(ctx)
 Missed triggers (after a leader-election gap) are handled by a per-job
 `WithMisfirePolicy` — `MisfireSkip` (default) or `MisfireFireOnce`.
 
+Registered schedules are published to a registry, so the Inspector, CLI and
+web console can list them (with last-fired and liveness) even before they
+first fire; entries no scheduler has refreshed for a minute show as stale.
+
 ## Observability
 
 chronos-go is a headless library, so it ships tools to *see* what it is doing:
@@ -248,6 +259,7 @@ chronos-go is a headless library, so it ships tools to *see* what it is doing:
   go run ./cmd/chronos queue ls
   go run ./cmd/chronos task ls default archived
   go run ./cmd/chronos task ls default completed  # inspect retained successes
+  go run ./cmd/chronos queue pause default        # stop consuming (resume to undo)
   go run ./cmd/chronos task run default <id>   # re-run a dead-letter
   go run ./cmd/chronos task rm  default <id>
   ```
@@ -259,7 +271,8 @@ chronos-go is a headless library, so it ships tools to *see* what it is doing:
   # Grafana: http://localhost:3000  (dashboard "chronos-go")
   ```
 - **Web console** — a browser task-management UI (card dashboard, chain/group
-  visualization, bulk re-run, cluster-aware) in [`contrib/webui`](contrib/webui):
+  visualization, bulk re-run, queue pause, schedule registry, cluster-aware)
+  in [`contrib/webui`](contrib/webui):
   ```bash
   cd contrib/webui && go run ./cmd/webui                 # standalone
   go run ./cmd/webui --cluster --redis n1:7000           # Redis Cluster
@@ -358,8 +371,7 @@ crashes after finishing but before acking). **Make handlers idempotent.**
   processing*; while it waits in the scheduled/retry set, it is covered by its
   TTL — set the TTL comfortably above expected waiting time.
 - Not yet built: chain×group composition (groups and chains cannot nest yet),
-  result passing between workflow steps, queue pause/resume and a schedule
-  registry (planned as the web console's phase 2).
+  result passing between workflow steps.
 
 ## Development
 

@@ -9,7 +9,10 @@ the public `chronos.Inspector`. It complements Grafana (metrics) and the CLI:
   member grid on the task page; re-running a dead-letter resumes the flow.
 - **Bulk actions** — re-run or delete every archived task in a queue.
 - **Search** — jump to a task by ID across all queues.
-- **Scheduler status** — current leader and fired schedules.
+- **Queue pause/resume** — stop consuming a queue with one click (work
+  accumulates as pending; takes effect within ~1s).
+- **Scheduler status** — current leader and the full schedule registry
+  (including registered-but-never-fired schedules; stale entries greyed).
 - **Dark mode** — follows your system, with a manual toggle.
 - **Cluster-aware** — connects to standalone Redis or a Redis Cluster.
 

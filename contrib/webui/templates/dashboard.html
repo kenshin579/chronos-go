@@ -3,7 +3,7 @@
 <div class="qgrid" id="qgrid">
 {{range .Queues}}
   <a class="qcard{{if gt .Archived 0}} warn{{end}}" href="/queues/{{.Queue}}" data-queue="{{.Queue}}">
-    <div class="qname">{{.Queue}}</div>
+    <div class="qname">{{.Queue}} <span class="badge b-paused" data-stat="paused"{{if not .Paused}} hidden{{end}}>⏸ paused</span></div>
     <div class="qbig"><span class="num" data-stat="pending">{{.Pending}}</span><span class="unit">pending</span></div>
     <div class="spark" data-spark="{{.Queue}}">{{index $.Sparks .Queue}}</div>
     <div class="qsub">

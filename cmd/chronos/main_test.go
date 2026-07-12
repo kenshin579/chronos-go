@@ -108,3 +108,27 @@ func TestRun_QueueLsIncludesCompleted(t *testing.T) {
 		t.Errorf("queue ls header missing COMPLETED:\n%s", out.String())
 	}
 }
+
+func TestRun_QueuePauseResume(t *testing.T) {
+	client := testutil.NewRedis(t)
+	c := chronos.NewClient(client)
+	defer c.Close()
+	if _, err := chronos.Enqueue(context.Background(), c, greetArgs{Name: "x"}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	var out bytes.Buffer
+	if code := run([]string{"queue", "pause", "default"}, client, &out); code != 0 {
+		t.Fatalf("pause exit = %d: %s", code, out.String())
+	}
+	out.Reset()
+	if code := run([]string{"queue", "ls"}, client, &out); code != 0 {
+		t.Fatalf("ls exit = %d", code)
+	}
+	if !strings.Contains(out.String(), "PAUSED") || !strings.Contains(out.String(), "yes") {
+		t.Errorf("queue ls missing paused flag:\n%s", out.String())
+	}
+	out.Reset()
+	if code := run([]string{"queue", "resume", "default"}, client, &out); code != 0 {
+		t.Fatalf("resume exit = %d", code)
+	}
+}

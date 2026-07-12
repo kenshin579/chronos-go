@@ -24,6 +24,7 @@ package chronos
 //  [x] chainEnqueueCmd/chainScheduleCmd (chain successor)   → TestCluster_ChainCompletes
 //  [x] CreateGroup + groupCompleteCmd (group fan-out)       → TestCluster_GroupFanOut
 //  [x] requeueCmd (shutdown batch return)                   → TestCluster_RequeueReturnsTask
+//  [x] pause/resume (global SET, consumption gate)          → TestCluster_PauseResume
 
 import (
 	"context"
@@ -660,4 +661,40 @@ func TestCluster_RequeueReturnsTask(t *testing.T) {
 	if err != nil || again.ID != info.ID {
 		t.Fatalf("re-dequeue: %v %v", again, err)
 	}
+}
+
+func TestCluster_PauseResume(t *testing.T) {
+	client := testutil.NewClusterRedis(t)
+	c := NewClient(client)
+	defer c.Close()
+	ctx := context.Background()
+	insp := NewInspector(client)
+
+	var done atomic.Int32
+	mux := NewMux()
+	AddHandler(mux, func(ctx context.Context, task *Task[clArgs]) error {
+		done.Add(1)
+		return nil
+	})
+	srv := NewServer(client, clusterServerConfig("alpha"))
+	if err := srv.Start(ctx, mux); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	if err := insp.PauseQueue(ctx, "alpha"); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	time.Sleep(pauseCheckInterval + pollBlock + time.Second) // 최악: 진행 중이던 블로킹 라운드 완료까지
+	if _, err := Enqueue(ctx, c, clArgs{N: 51}, WithQueue("alpha")); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	time.Sleep(2 * time.Second)
+	if done.Load() != 0 {
+		t.Fatalf("consumed while paused")
+	}
+	if err := insp.ResumeQueue(ctx, "alpha"); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	waitFor(t, 10*time.Second, "consumption after resume", func() bool { return done.Load() == 1 })
 }
