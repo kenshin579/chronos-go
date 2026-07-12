@@ -174,7 +174,13 @@ func (s *Scheduler) scheduleIDs() []string {
 func (s *Scheduler) run(ctx context.Context) {
 	defer s.wg.Done()
 
-	renew := time.NewTicker(s.cfg.LeaderTTL / 2)
+	// Renew at LeaderTTL/2, clamped to 20s so the registry heartbeat below
+	// always beats the Inspector's staleAfter (1 minute) even with a large TTL.
+	renewEvery := s.cfg.LeaderTTL / 2
+	if renewEvery > 20*time.Second {
+		renewEvery = 20 * time.Second
+	}
+	renew := time.NewTicker(renewEvery)
 	defer renew.Stop()
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()

@@ -320,7 +320,9 @@ func (s *Server) fetchLoop(ctx context.Context) {
 		}
 
 		// paused 큐는 이번 라운드에서 제외한다(소비만 중단 — enqueue/forwarding/
-		// recovery는 계속). 빈 paused 집합이면 order는 그대로다.
+		// recovery는 계속). 빈 paused 집합이면 order는 그대로다. WRR picker가
+		// paused primary를 뽑았다면 그 pick은 버려지지만 무해하다: 비블로킹
+		// 스윕이 나머지 큐를 모두 훑고, resume 시 SWRR 가중치는 정상 복귀한다.
 		refreshPaused()
 		if len(paused) > 0 {
 			kept := order[:0]

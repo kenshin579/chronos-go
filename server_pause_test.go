@@ -33,7 +33,7 @@ func TestServer_PauseStopsConsumptionResumeRestarts(t *testing.T) {
 	if err := r.PauseQueue(ctx, "default"); err != nil {
 		t.Fatalf("pause: %v", err)
 	}
-	time.Sleep(1500 * time.Millisecond) // pause cache refresh
+	time.Sleep(pauseCheckInterval + pollBlock + time.Second) // worst case: stale round finishes its blocking read
 	for i := 0; i < 3; i++ {
 		if _, err := Enqueue(ctx, c, emailArgs{UserID: "p"}); err != nil {
 			t.Fatalf("enqueue: %v", err)
@@ -83,7 +83,7 @@ func TestServer_PauseOneQueueOthersContinue(t *testing.T) {
 	if err := r.PauseQueue(ctx, "qa"); err != nil {
 		t.Fatalf("pause: %v", err)
 	}
-	time.Sleep(1500 * time.Millisecond)
+	time.Sleep(pauseCheckInterval + pollBlock + time.Second)
 	if _, err := Enqueue(ctx, c, chainArgs{Step: 1}, WithQueue("qa")); err != nil {
 		t.Fatalf("enqueue qa: %v", err)
 	}

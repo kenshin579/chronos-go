@@ -685,7 +685,7 @@ func TestCluster_PauseResume(t *testing.T) {
 	if err := insp.PauseQueue(ctx, "alpha"); err != nil {
 		t.Fatalf("pause: %v", err)
 	}
-	time.Sleep(1500 * time.Millisecond) // pause 캐시 반영
+	time.Sleep(pauseCheckInterval + pollBlock + time.Second) // 최악: 진행 중이던 블로킹 라운드 완료까지
 	if _, err := Enqueue(ctx, c, clArgs{N: 51}, WithQueue("alpha")); err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
