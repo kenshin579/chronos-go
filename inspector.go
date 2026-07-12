@@ -39,6 +39,7 @@ type QueueInfo struct {
 	Retry     int64
 	Archived  int64
 	Completed int64
+	Paused    bool
 }
 
 // Queues lists all known queues with their per-state counts.
@@ -46,6 +47,14 @@ func (i *Inspector) Queues(ctx context.Context) ([]*QueueInfo, error) {
 	names, err := i.rdb.Queues(ctx)
 	if err != nil {
 		return nil, err
+	}
+	pausedNames, err := i.rdb.PausedQueues(ctx)
+	if err != nil {
+		return nil, err
+	}
+	paused := make(map[string]bool, len(pausedNames))
+	for _, name := range pausedNames {
+		paused[name] = true
 	}
 	infos := make([]*QueueInfo, 0, len(names))
 	for _, name := range names {
@@ -56,10 +65,26 @@ func (i *Inspector) Queues(ctx context.Context) ([]*QueueInfo, error) {
 		infos = append(infos, &QueueInfo{
 			Queue: st.Queue, Pending: st.Pending, Active: st.Active,
 			Scheduled: st.Scheduled, Retry: st.Retry, Archived: st.Archived,
-			Completed: st.Completed,
+			Completed: st.Completed, Paused: paused[st.Queue],
 		})
 	}
 	return infos, nil
+}
+
+// PauseQueue stops servers from consuming the queue (within about one second).
+// Enqueueing, forwarding and recovery continue — work accumulates as pending.
+func (i *Inspector) PauseQueue(ctx context.Context, qname string) error {
+	return i.rdb.PauseQueue(ctx, qname)
+}
+
+// ResumeQueue lifts a pause; consumption restarts within about one second.
+func (i *Inspector) ResumeQueue(ctx context.Context, qname string) error {
+	return i.rdb.ResumeQueue(ctx, qname)
+}
+
+// PausedQueues lists currently paused queue names.
+func (i *Inspector) PausedQueues(ctx context.Context) ([]string, error) {
+	return i.rdb.PausedQueues(ctx)
 }
 
 // zsetKeyForState maps a user-facing state name to its ZSET key.

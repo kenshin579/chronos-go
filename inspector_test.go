@@ -276,3 +276,36 @@ func TestInspector_GroupMembersAndSchedulerStatus(t *testing.T) {
 		t.Errorf("GroupQueue = %q err=%v, want default", ti.GroupQueue, err)
 	}
 }
+
+func TestInspector_PauseResumeAndPausedFlag(t *testing.T) {
+	client := testutil.NewRedis(t)
+	c := NewClient(client)
+	defer c.Close()
+	ctx := context.Background()
+	insp := NewInspector(client)
+
+	if _, err := Enqueue(ctx, c, emailArgs{UserID: "x"}, WithProcessIn(time.Hour)); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if err := insp.PauseQueue(ctx, "default"); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	qs, err := insp.Queues(ctx)
+	if err != nil || len(qs) == 0 {
+		t.Fatalf("queues: %v", err)
+	}
+	if !qs[0].Paused {
+		t.Error("QueueInfo.Paused = false, want true")
+	}
+	paused, err := insp.PausedQueues(ctx)
+	if err != nil || len(paused) != 1 {
+		t.Fatalf("paused = %v err=%v", paused, err)
+	}
+	if err := insp.ResumeQueue(ctx, "default"); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	qs, _ = insp.Queues(ctx)
+	if qs[0].Paused {
+		t.Error("still paused after resume")
+	}
+}
