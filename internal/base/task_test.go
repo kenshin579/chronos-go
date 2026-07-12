@@ -161,3 +161,12 @@ func TestGroupKey(t *testing.T) {
 		t.Errorf("GroupKey = %q, want %q", got, want)
 	}
 }
+
+func TestGlobalKeys(t *testing.T) {
+	if PausedKey() != "chronos:paused" {
+		t.Errorf("PausedKey = %q", PausedKey())
+	}
+	if SchedulesKey() != "chronos:schedules" {
+		t.Errorf("SchedulesKey = %q", SchedulesKey())
+	}
+}

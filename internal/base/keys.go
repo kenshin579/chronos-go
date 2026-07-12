@@ -28,6 +28,15 @@ func QueuesKey() string {
 	return "chronos:queues"
 }
 
+// PausedKey is the SET key listing paused queue names. Global (no hash tag):
+// only single-key commands touch it, so it is cluster-safe.
+func PausedKey() string { return "chronos:paused" }
+
+// SchedulesKey is the HASH key holding the registry of known schedules
+// (field = deterministic schedule ID, value = JSON metadata). Global single
+// key, single-key commands only — cluster-safe.
+func SchedulesKey() string { return "chronos:schedules" }
+
 // TaskKeyPrefix returns the prefix shared by every task HASH key of a queue.
 // Lua scripts build a task key by concatenating this prefix with a task ID read
 // from a ZSET; the prefix keeps those keys in the same cluster slot.
