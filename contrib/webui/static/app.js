@@ -34,6 +34,8 @@
         var el = card.querySelector('[data-stat="' + k + '"]');
         if (el) el.textContent = map[k]; // data-stat elements hold only the number
       });
+      var pausedBadge = card.querySelector('[data-stat="paused"]');
+      if (pausedBadge) pausedBadge.hidden = !q.paused;
       var spark = card.querySelector("[data-spark]");
       if (spark && q.spark) spark.innerHTML = q.spark; // server-generated SVG only
       card.classList.toggle("warn", q.archived > 0);

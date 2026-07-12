@@ -521,3 +521,8 @@ form { display: inline-block; margin: 4px 8px 0 0; }
 .bulkbar { display: flex; gap: 8px; margin: 12px 0; }
 .muted { color: var(--muted); }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+
+/* pause */
+.b-paused { background: color-mix(in srgb, var(--c-retry) 18%, transparent); color: var(--c-retry); }
+.pausebar { display: flex; align-items: center; gap: 10px; margin: 10px 0; }
+tr.stale { opacity: .5; }

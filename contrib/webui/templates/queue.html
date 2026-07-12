@@ -1,6 +1,11 @@
 {{define "content"}}
 <h1>Queue: {{.Queue}}</h1>
 {{if .Msg}}<p class="msg">{{.Msg}}</p>{{end}}
+<div class="pausebar">
+{{if .Paused}}<span class="badge b-paused">⏸ paused</span>
+<form method="post" action="/queues/{{.Queue}}/resume"><button>▶ Resume</button></form>
+{{else}}<form method="post" action="/queues/{{.Queue}}/pause"><button>⏸ Pause queue</button></form>{{end}}
+</div>
 <nav class="states">
 {{range .States}}<a href="/queues/{{$.Queue}}?state={{.}}" {{if eq . $.State}}class="active"{{end}}>{{.}}</a> {{end}}
 </nav>

@@ -72,6 +72,7 @@ type statsQueue struct {
 	Retry     int64  `json:"retry"`
 	Archived  int64  `json:"archived"`
 	Completed int64  `json:"completed"`
+	Paused    bool   `json:"paused"`
 	Spark     string `json:"spark"`
 }
 
@@ -94,6 +95,7 @@ func (s *server) apiStats(w http.ResponseWriter, r *http.Request) {
 			Retry:     q.Retry,
 			Archived:  q.Archived,
 			Completed: q.Completed,
+			Paused:    q.Paused,
 			Spark:     s.sparks.svg(q.Queue, sparkW, sparkH),
 		})
 	}
@@ -127,6 +129,14 @@ func (s *server) queueDetail(w http.ResponseWriter, r *http.Request) {
 		}
 		tasks = kept
 	}
+	paused := false
+	if names, perr := s.insp.PausedQueues(r.Context()); perr == nil {
+		for _, n := range names {
+			if n == queue {
+				paused = true
+			}
+		}
+	}
 	render(w, "queue", struct {
 		pageData
 		Queue      string
@@ -135,6 +145,7 @@ func (s *server) queueDetail(w http.ResponseWriter, r *http.Request) {
 		Tasks      []*chronos.TaskInfo
 		Msg        string
 		KindFilter string
+		Paused     bool
 	}{
 		pageData:   pageData{Title: queue, Conn: s.conn},
 		Queue:      queue,
@@ -143,6 +154,7 @@ func (s *server) queueDetail(w http.ResponseWriter, r *http.Request) {
 		Tasks:      tasks,
 		Msg:        r.URL.Query().Get("msg"),
 		KindFilter: r.URL.Query().Get("kind"),
+		Paused:     paused,
 	})
 }
 func (s *server) taskDetail(w http.ResponseWriter, r *http.Request) {
@@ -312,4 +324,27 @@ func (s *server) schedulerPage(w http.ResponseWriter, r *http.Request) {
 		pageData
 		Sched *chronos.SchedulerStatus
 	}{pageData{Title: "scheduler", Conn: s.conn}, st})
+}
+
+func (s *server) pauseQueue(w http.ResponseWriter, r *http.Request) {
+	s.queueAction(w, r, s.insp.PauseQueue, "paused (takes effect within ~1s)")
+}
+
+func (s *server) resumeQueue(w http.ResponseWriter, r *http.Request) {
+	s.queueAction(w, r, s.insp.ResumeQueue, "resumed")
+}
+
+// queueAction runs a queue-level mutating call with the same Origin guard and
+// PRG as task actions.
+func (s *server) queueAction(w http.ResponseWriter, r *http.Request, fn func(ctx, string) error, okMsg string) {
+	if o := r.Header.Get("Origin"); o != "" && o != "http://"+r.Host && o != "https://"+r.Host {
+		http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+		return
+	}
+	queue := r.PathValue("queue")
+	msg := okMsg
+	if err := fn(r.Context(), queue); err != nil {
+		msg = "error: " + err.Error()
+	}
+	http.Redirect(w, r, "/queues/"+queue+"?msg="+url.QueryEscape(msg), http.StatusSeeOther)
 }

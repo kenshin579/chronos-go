@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -557,4 +558,54 @@ func TestAPIStats_ConcurrentPolling(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestQueuePauseToggle(t *testing.T) {
+	client := newTestRedis(t)
+	seedScheduled(t, client)
+	insp := chronos.NewInspector(client)
+	srv := httptest.NewServer(Handler(insp))
+	defer srv.Close()
+
+	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	resp, err := noRedirect.Post(srv.URL+"/queues/default/pause", "", nil)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if paused, _ := insp.PausedQueues(context.Background()); len(paused) != 1 {
+		t.Fatalf("not paused: %v", paused)
+	}
+	// 대시보드에 ⏸ 배지.
+	body := readBody(t, mustGet(t, srv.URL+"/"))
+	if !strings.Contains(body, "b-paused") {
+		t.Errorf("dashboard missing paused badge")
+	}
+	// resume.
+	resp2, err := noRedirect.Post(srv.URL+"/queues/default/resume", "", nil)
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	resp2.Body.Close()
+	if paused, _ := insp.PausedQueues(context.Background()); len(paused) != 0 {
+		t.Fatalf("still paused: %v", paused)
+	}
+}
+
+func TestSchedulerPage_RegistryColumns(t *testing.T) {
+	client := newTestRedis(t)
+	client.HSet(context.Background(), "chronos:schedules", "regjob#1",
+		fmt.Sprintf(`{"kind":"report:daily","queue":"ops","spec":"0 0 * * *","registered_at":%d,"last_seen":%d}`,
+			time.Now().Unix(), time.Now().Unix()))
+	srv := httptest.NewServer(Handler(chronos.NewInspector(client)))
+	defer srv.Close()
+	body := readBody(t, mustGet(t, srv.URL+"/scheduler"))
+	if !strings.Contains(body, "report:daily") || !strings.Contains(body, "0 0 * * *") {
+		t.Errorf("scheduler page missing registry columns:\n%s", body)
+	}
 }
