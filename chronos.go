@@ -60,10 +60,13 @@ type TaskInfo struct {
 	NextProcessAt time.Time // ZSET score as a time: scheduled-for / retry-at / died-at / expires-at (completed)
 	CompletedAt   time.Time // when the task finished successfully (zero unless retained)
 
-	ChainPending int // number of chain links still queued behind this task (0 = none/last)
+	ChainPending int      // number of chain links still queued behind this task (0 = none/last)
+	ChainIndex   int      // this task's 0-based position in its chain
+	ChainNext    []string // kinds of the links waiting behind this task, in order
 
 	GroupID      string // group this task belongs to ("" = none)
 	GroupPending int    // members of that group not yet succeeded; populated by GetTask only. 0 also when the group finished or its record expired (see rdb.GroupTTL) or the lookup failed — it is a hint, not an authority.
+	GroupQueue   string // queue holding the group's state (= callback queue)
 }
 
 // Client enqueues tasks.

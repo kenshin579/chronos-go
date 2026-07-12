@@ -1,0 +1,21 @@
+{{define "content"}}
+<div class="pagehead"><h1>Queues</h1>{{if .Msg}}<p class="flash">{{.Msg}}</p>{{end}}</div>
+<div class="qgrid" id="qgrid">
+{{range .Queues}}
+  <a class="qcard{{if gt .Archived 0}} warn{{end}}" href="/queues/{{.Queue}}" data-queue="{{.Queue}}">
+    <div class="qname">{{.Queue}}</div>
+    <div class="qbig"><span class="num" data-stat="pending">{{.Pending}}</span><span class="unit">pending</span></div>
+    <div class="spark" data-spark="{{.Queue}}">{{index $.Sparks .Queue}}</div>
+    <div class="qsub">
+      <span class="badge b-active"><b data-stat="active">{{.Active}}</b> active</span>
+      <span class="badge b-sched"><b data-stat="scheduled">{{.Scheduled}}</b> sched</span>
+      <span class="badge b-retry"><b data-stat="retry">{{.Retry}}</b> retry</span>
+      <span class="badge b-dead"><b data-stat="archived">{{.Archived}}</b> dead</span>
+      <span class="badge b-done"><b data-stat="completed">{{.Completed}}</b> done</span>
+    </div>
+  </a>
+{{end}}
+{{if not .Queues}}<div class="empty">No queues yet — enqueue a task to see it here.</div>{{end}}
+</div>
+<div class="schedbar">🗓 {{if .Sched}}{{if .Sched.LeaderID}}leader <b>{{.Sched.LeaderID}}</b> · {{len .Sched.Schedules}} schedule(s){{else}}no scheduler leader{{end}}{{else}}scheduler status unavailable{{end}} — <a href="/scheduler">details</a></div>
+{{end}}

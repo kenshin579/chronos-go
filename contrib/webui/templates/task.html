@@ -1,0 +1,35 @@
+{{define "content"}}
+<h1>Task {{.Task.ID}}</h1>
+<p><a href="/queues/{{.Task.Queue}}?state={{.Task.State}}">&larr; back to {{.Task.Queue}}</a></p>
+<dl>
+<dt>Kind</dt><dd>{{.Task.Kind}}</dd>
+<dt>State</dt><dd>{{.Task.State}}</dd>
+<dt>Retried</dt><dd>{{.Task.Retried}} / {{.Task.MaxRetry}}</dd>
+<dt>When</dt><dd>{{if not .Task.NextProcessAt.IsZero}}{{.Task.NextProcessAt.Format "2006-01-02 15:04:05"}}{{else}}—{{end}}</dd>
+<dt>Last error</dt><dd class="err">{{if .Task.LastErr}}{{.Task.LastErr}}{{else}}(none){{end}}</dd>
+</dl>
+{{if or (gt .Task.ChainIndex 0) .Task.ChainNext}}
+<div class="panel">
+  <div class="label">🔗 CHAIN — step {{add .Task.ChainIndex 1}} of {{add (add .Task.ChainIndex 1) (len .Task.ChainNext)}}</div>
+  <div class="stepper">
+    {{range seq .Task.ChainIndex}}<div class="step done"><div class="dot">✓</div></div><div class="bar done"></div>{{end}}
+    <div class="step {{if eq .Task.State "archived"}}fail{{else}}cur{{end}}"><div class="dot">{{if eq .Task.State "archived"}}✗{{else}}●{{end}}</div><div class="name">{{.Task.Kind}}</div></div>
+    {{range .Task.ChainNext}}<div class="bar"></div><div class="step wait"><div class="dot"></div><div class="name">{{.}}</div></div>{{end}}
+  </div>
+</div>
+{{end}}
+{{if .Task.GroupID}}
+<div class="panel">
+  {{if .GroupLookupOK}}
+  <div class="label">🧩 GROUP {{.Task.GroupID}} — {{len .GroupMembers}} member(s) still pending</div>
+  <div class="member-grid">{{range .GroupMembers}}<span class="member">{{.}}</span>{{end}}</div>
+  {{else}}
+  <div class="label">🧩 GROUP {{.Task.GroupID}} — status unavailable</div>
+  {{end}}
+</div>
+{{end}}
+<h2>Payload</h2>
+<pre>{{.Payload}}</pre>
+<form method="post" action="/queues/{{.Task.Queue}}/tasks/{{.Task.ID}}/run"><button>▶ Re-run{{if .Task.ChainNext}} — resumes the chain{{else if .Task.GroupID}} — resumes the group{{end}}</button></form>
+<form method="post" action="/queues/{{.Task.Queue}}/tasks/{{.Task.ID}}/delete"><button class="danger">Delete</button></form>
+{{end}}

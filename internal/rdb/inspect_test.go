@@ -171,3 +171,40 @@ func TestRunTask_ActiveTaskIsNoOp(t *testing.T) {
 		t.Errorf("stream len changed %d→%d; RunTask on an active task must not add a duplicate", before, after)
 	}
 }
+
+func TestGroupMemberIDs_AndLeaderAndSchedules(t *testing.T) {
+	client := testutil.NewRedis(t)
+	r := NewRDB(client)
+	ctx := context.Background()
+
+	if err := r.CreateGroup(ctx, "cbq", "gm", []string{"gm:m0", "gm:m1"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	ids, err := r.GroupMemberIDs(ctx, "cbq", "gm")
+	if err != nil || len(ids) != 2 {
+		t.Fatalf("members = %v err=%v, want 2", ids, err)
+	}
+
+	leader, err := r.LeaderID(ctx)
+	if err != nil || leader != "" {
+		t.Fatalf("leader = %q err=%v, want empty", leader, err)
+	}
+	client.Set(ctx, base.LeaderKey(), "inst-1", 0)
+	if leader, _ = r.LeaderID(ctx); leader != "inst-1" {
+		t.Errorf("leader = %q, want inst-1", leader)
+	}
+
+	client.Set(ctx, base.ScheduleLastFiredKey("job-a"), 1700000000, 0)
+	client.Set(ctx, base.ScheduleLastFiredKey("job-b"), 1700000100, 0)
+	scheds, err := r.ScanSchedules(ctx)
+	if err != nil || len(scheds) != 2 {
+		t.Fatalf("schedules = %v err=%v, want 2", scheds, err)
+	}
+	found := map[string]int64{}
+	for _, s := range scheds {
+		found[s.ID] = s.LastFired
+	}
+	if found["job-a"] != 1700000000 || found["job-b"] != 1700000100 {
+		t.Errorf("schedules wrong: %v", found)
+	}
+}

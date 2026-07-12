@@ -136,8 +136,54 @@ func taskInfoFromMsg(m *base.TaskMessage) *TaskInfo {
 		ti.CompletedAt = time.Unix(m.CompletedAt, 0)
 	}
 	ti.ChainPending = len(m.Chain)
+	ti.ChainIndex = m.ChainIndex
+	if len(m.Chain) > 0 {
+		kinds := make([]string, len(m.Chain))
+		for i, l := range m.Chain {
+			kinds[i] = l.Kind
+		}
+		ti.ChainNext = kinds
+	}
 	ti.GroupID = m.GroupID
+	ti.GroupQueue = m.GroupQueue
 	return ti
+}
+
+// GroupMembers returns the IDs of a group's not-yet-succeeded members. cbQueue
+// is the callback queue (a member TaskInfo carries it as GroupQueue).
+func (i *Inspector) GroupMembers(ctx context.Context, cbQueue, groupID string) ([]string, error) {
+	return i.rdb.GroupMemberIDs(ctx, cbQueue, groupID)
+}
+
+// SchedulerStatus reports the current scheduler leader and every schedule that
+// has fired at least once (registered-but-never-fired schedules are invisible;
+// a future schedule registry will list them).
+type SchedulerStatus struct {
+	LeaderID  string
+	Schedules []ScheduleInfo
+}
+
+// ScheduleInfo is one schedule's fire history.
+type ScheduleInfo struct {
+	ID        string
+	LastFired time.Time
+}
+
+// SchedulerStatus returns the scheduler's leader and fired-schedule list.
+func (i *Inspector) SchedulerStatus(ctx context.Context) (*SchedulerStatus, error) {
+	leader, err := i.rdb.LeaderID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := i.rdb.ScanSchedules(ctx)
+	if err != nil {
+		return nil, err
+	}
+	st := &SchedulerStatus{LeaderID: leader, Schedules: make([]ScheduleInfo, 0, len(raw))}
+	for _, s := range raw {
+		st.Schedules = append(st.Schedules, ScheduleInfo{ID: s.ID, LastFired: time.Unix(s.LastFired, 0)})
+	}
+	return st, nil
 }
 
 // RunTask promotes a scheduled/retry/archived task so it runs immediately.

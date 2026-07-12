@@ -1,0 +1,31 @@
+{{define "content"}}
+<h1>Queue: {{.Queue}}</h1>
+{{if .Msg}}<p class="msg">{{.Msg}}</p>{{end}}
+<nav class="states">
+{{range .States}}<a href="/queues/{{$.Queue}}?state={{.}}" {{if eq . $.State}}class="active"{{end}}>{{.}}</a> {{end}}
+</nav>
+<form class="filterbar" method="get" action="/queues/{{.Queue}}">
+  <input type="hidden" name="state" value="{{.State}}">
+  <input name="kind" value="{{.KindFilter}}" placeholder="filter by kind…">
+  <button type="submit">Filter</button>
+</form>
+{{if eq .State "archived"}}
+<div class="bulkbar">
+  <form method="post" action="/queues/{{.Queue}}/bulk/run?state=archived" data-confirm="Re-run ALL archived tasks in {{.Queue}}?"><button>▶ Re-run all</button></form>
+  <form method="post" action="/queues/{{.Queue}}/bulk/delete?state=archived" data-confirm="Delete ALL archived tasks in {{.Queue}}? This cannot be undone."><button class="danger">Delete all</button></form>
+</div>
+{{end}}
+<table>
+<tr><th>ID</th><th>Kind</th><th>Error</th><th>When</th></tr>
+{{range .Tasks}}
+<tr>
+<td><a href="/queues/{{$.Queue}}/tasks/{{.ID}}">{{.ID}}</a> {{if .ChainNext}}🔗{{else if gt .ChainIndex 0}}🔗{{end}}{{if .GroupID}}🧩{{end}}</td>
+<td>{{.Kind}}</td>
+<td class="errcell">{{if .LastErr}}{{trunc .LastErr 60}}{{else}}—{{end}}</td>
+<td>{{if not .NextProcessAt.IsZero}}{{.NextProcessAt.Format "01-02 15:04:05"}}{{else}}—{{end}}</td>
+</tr>
+{{else}}
+<tr><td colspan="4">no tasks in this state</td></tr>
+{{end}}
+</table>
+{{end}}

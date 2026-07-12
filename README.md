@@ -258,6 +258,12 @@ chronos-go is a headless library, so it ships tools to *see* what it is doing:
   cd contrib/prometheus/deploy && docker compose up --build
   # Grafana: http://localhost:3000  (dashboard "chronos-go")
   ```
+- **Web console** — a browser task-management UI (card dashboard, chain/group
+  visualization, bulk re-run, cluster-aware) in [`contrib/webui`](contrib/webui):
+  ```bash
+  cd contrib/webui && go run ./cmd/webui                 # standalone
+  go run ./cmd/webui --cluster --redis n1:7000           # Redis Cluster
+  ```
 
 See [`docs/OBSERVING.md`](docs/OBSERVING.md) for Redis-level inspection.
 
@@ -351,8 +357,9 @@ crashes after finishing but before acking). **Make handlers idempotent.**
 - The unique lock is heartbeat-renewed only while a task is *actively
   processing*; while it waits in the scheduled/retry set, it is covered by its
   TTL — set the TTL comfortably above expected waiting time.
-- Not yet built: a web UI, chain×group composition (groups and chains cannot
-  nest yet), result passing between workflow steps.
+- Not yet built: chain×group composition (groups and chains cannot nest yet),
+  result passing between workflow steps, queue pause/resume and a schedule
+  registry (planned as the web console's phase 2).
 
 ## Development
 

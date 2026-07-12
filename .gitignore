@@ -37,3 +37,6 @@ dump.rdb
 
 # Compiled chronos CLI binary (from `go build ./cmd/chronos`)
 /chronos
+
+# Brainstorming visual companion sessions
+.superpowers/

@@ -2,7 +2,9 @@ package rdb
 
 import (
 	"context"
+	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/redis/go-redis/v9"
 
@@ -77,6 +79,79 @@ func (r *RDB) QueueStats(ctx context.Context, qname string) (*QueueStats, error)
 // Queues returns the names of all known queues.
 func (r *RDB) Queues(ctx context.Context) ([]string, error) {
 	return r.client.SMembers(ctx, base.QueuesKey()).Result()
+}
+
+// GroupMemberIDs returns the IDs of a group's not-yet-succeeded members
+// (empty when the group finished or its record expired).
+func (r *RDB) GroupMemberIDs(ctx context.Context, cbQueue, groupID string) ([]string, error) {
+	return r.client.SMembers(ctx, base.GroupKey(cbQueue, groupID)).Result()
+}
+
+// LeaderID returns the current scheduler leader's instance ID ("" when no
+// leader holds the lock).
+func (r *RDB) LeaderID(ctx context.Context) (string, error) {
+	id, err := r.client.Get(ctx, base.LeaderKey()).Result()
+	if err == redis.Nil {
+		return "", nil
+	}
+	return id, err
+}
+
+// ScheduleFireInfo is one schedule that has fired at least once.
+type ScheduleFireInfo struct {
+	ID        string
+	LastFired int64 // unix seconds
+}
+
+// ScanSchedules lists schedules that have ever fired, with their last-fired
+// times, by scanning the per-schedule last-fired keys. Registered-but-never-
+// fired schedules are invisible (they live only in scheduler process memory).
+// The keys carry no hash tag, so on a cluster they spread across slots — scan
+// every master.
+func (r *RDB) ScanSchedules(ctx context.Context) ([]ScheduleFireInfo, error) {
+	// Derive the scan pattern (and trim bounds) from the canonical key builder
+	// so a key-shape change cannot silently break this scan.
+	pattern := base.ScheduleLastFiredKey("*")
+	star := strings.Index(pattern, "*")
+	prefix, suffix := pattern[:star], pattern[star+1:]
+
+	collect := func(ctx context.Context, c redis.UniversalClient, out *[]ScheduleFireInfo, mu *sync.Mutex) error {
+		iter := c.Scan(ctx, 0, prefix+"*"+suffix, 100).Iterator()
+		for iter.Next(ctx) {
+			key := iter.Val()
+			raw, err := r.client.Get(ctx, key).Result() // GET via the routed client
+			if err == redis.Nil {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			ts, err := strconv.ParseInt(raw, 10, 64)
+			if err != nil {
+				continue // foreign key shape; skip
+			}
+			id := strings.TrimSuffix(strings.TrimPrefix(key, prefix), suffix)
+			mu.Lock()
+			*out = append(*out, ScheduleFireInfo{ID: id, LastFired: ts})
+			mu.Unlock()
+		}
+		return iter.Err()
+	}
+
+	var out []ScheduleFireInfo
+	var mu sync.Mutex
+	if cc, ok := r.client.(*redis.ClusterClient); ok {
+		if err := cc.ForEachMaster(ctx, func(ctx context.Context, m *redis.Client) error {
+			return collect(ctx, m, &out, &mu)
+		}); err != nil {
+			return nil, err
+		}
+		return out, nil
+	}
+	if err := collect(ctx, r.client, &out, &mu); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // ZSetTask is a task referenced by a state ZSET together with its score

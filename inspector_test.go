@@ -215,3 +215,64 @@ func TestInspector_CompletedCountAndActions(t *testing.T) {
 		t.Error("task still present after delete")
 	}
 }
+
+func TestInspector_ChainStepperFields(t *testing.T) {
+	client := testutil.NewRedis(t)
+	c := NewClient(client)
+	defer c.Close()
+	ctx := context.Background()
+
+	info, err := NewChain().
+		Then(emailArgs{UserID: "s1"}, WithProcessIn(time.Hour)).
+		Then(emailArgs{UserID: "s2"}).
+		Then(emailArgs{UserID: "s3"}).
+		Enqueue(ctx, c)
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	insp := NewInspector(client)
+	got, err := insp.GetTask(ctx, "default", info.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.ChainIndex != 0 {
+		t.Errorf("ChainIndex = %d, want 0", got.ChainIndex)
+	}
+	if len(got.ChainNext) != 2 || got.ChainNext[0] != "email:send" {
+		t.Errorf("ChainNext = %v, want 2 kinds", got.ChainNext)
+	}
+}
+
+func TestInspector_GroupMembersAndSchedulerStatus(t *testing.T) {
+	client := testutil.NewRedis(t)
+	ctx := context.Background()
+	insp := NewInspector(client)
+
+	st, err := insp.SchedulerStatus(ctx)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if st.LeaderID != "" || len(st.Schedules) != 0 {
+		t.Errorf("empty status wrong: %+v", st)
+	}
+
+	c := NewClient(client)
+	defer c.Close()
+	ginfo, err := NewGroup().
+		Add(emailArgs{UserID: "m0"}, WithProcessIn(time.Hour)).
+		Add(emailArgs{UserID: "m1"}, WithProcessIn(time.Hour)).
+		OnComplete(emailArgs{UserID: "cb"}).
+		Enqueue(ctx, c)
+	if err != nil {
+		t.Fatalf("group: %v", err)
+	}
+	members, err := insp.GroupMembers(ctx, "default", ginfo.GroupID)
+	if err != nil || len(members) != 2 {
+		t.Fatalf("members = %v err=%v, want 2", members, err)
+	}
+	// 멤버 TaskInfo가 GroupQueue를 노출해 UI가 GroupMembers를 호출 가능해야 한다.
+	ti, err := insp.GetTask(ctx, "default", ginfo.MemberIDs[0])
+	if err != nil || ti.GroupQueue != "default" {
+		t.Errorf("GroupQueue = %q err=%v, want default", ti.GroupQueue, err)
+	}
+}
