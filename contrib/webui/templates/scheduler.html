@@ -1,0 +1,19 @@
+{{define "content"}}
+<div class="pagehead"><h1>Scheduler</h1></div>
+<div class="panel">
+  <div class="label">LEADER</div>
+  {{if .Sched.LeaderID}}<p><b>{{.Sched.LeaderID}}</b> holds the leader lock.</p>
+  {{else}}<p class="muted">No leader currently holds the lock (no scheduler running, or between elections).</p>{{end}}
+</div>
+<div class="panel">
+  <div class="label">SCHEDULES (fired at least once)</div>
+  {{if .Sched.Schedules}}
+  <table>
+    <tr><th>SCHEDULE ID</th><th>LAST FIRED</th></tr>
+    {{range .Sched.Schedules}}
+    <tr><td class="mono">{{.ID}}</td><td>{{if not .LastFired.IsZero}}{{.LastFired.Format "2006-01-02 15:04:05"}}{{else}}—{{end}}</td></tr>
+    {{end}}
+  </table>
+  {{else}}<p class="muted">No schedule has fired yet. Registered-but-never-fired schedules are not visible.</p>{{end}}
+</div>
+{{end}}

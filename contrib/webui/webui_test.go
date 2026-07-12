@@ -94,6 +94,13 @@ var errDemo = errors.New("demo failure")
 // LastErr, and returns its task ID.
 func seedDeadLetter(t *testing.T, client redis.UniversalClient) string {
 	t.Helper()
+	return seedDeadLetters(t, client, 1)[0]
+}
+
+// seedDeadLetters runs a failing handler until n tasks are archived, returning
+// their IDs.
+func seedDeadLetters(t *testing.T, client redis.UniversalClient, n int) []string {
+	t.Helper()
 	c := chronos.NewClient(client)
 	defer c.Close()
 	ctx := context.Background()
@@ -104,28 +111,36 @@ func seedDeadLetter(t *testing.T, client redis.UniversalClient) string {
 	})
 	srv := chronos.NewServer(client, chronos.ServerConfig{
 		Queues:      map[string]int{"default": 1},
-		Concurrency: 1,
+		Concurrency: 2,
 	})
 	if err := srv.Start(ctx, mux); err != nil {
 		t.Fatalf("server start: %v", err)
 	}
 	defer srv.Shutdown(context.Background())
 
-	info, err := chronos.Enqueue(ctx, c, demoArgs{Msg: "boom"}, chronos.WithMaxRetry(0))
-	if err != nil {
-		t.Fatalf("enqueue: %v", err)
+	ids := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		info, err := chronos.Enqueue(ctx, c, demoArgs{Msg: "boom"}, chronos.WithMaxRetry(0))
+		if err != nil {
+			t.Fatalf("enqueue %d: %v", i, err)
+		}
+		ids = append(ids, info.ID)
 	}
 	insp := chronos.NewInspector(client)
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		got, gerr := insp.GetTask(ctx, "default", info.ID)
-		if gerr == nil && got.State == "archived" {
-			return info.ID
+	deadline := time.Now().Add(10 * time.Second)
+	for _, id := range ids {
+		for {
+			got, gerr := insp.GetTask(ctx, "default", id)
+			if gerr == nil && got.State == "archived" {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("task %s did not reach archived state in time", id)
+			}
+			time.Sleep(50 * time.Millisecond)
 		}
-		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatal("task did not reach archived state in time")
-	return ""
+	return ids
 }
 
 func TestDashboard_CardGridWithWarning(t *testing.T) {
@@ -414,5 +429,79 @@ func TestRunTask_RejectsGet(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want 405", resp.StatusCode)
+	}
+}
+
+func TestBulkRunAll_Archived(t *testing.T) {
+	client := newTestRedis(t)
+	seedDeadLetters(t, client, 3)
+	insp := chronos.NewInspector(client)
+	srv := httptest.NewServer(Handler(insp))
+	defer srv.Close()
+
+	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	resp, err := noRedirect.Post(srv.URL+"/queues/default/bulk/run?state=archived", "", nil)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	tasks, _ := insp.ListTasks(context.Background(), "default", "archived", 10)
+	if len(tasks) != 0 {
+		t.Errorf("archived not drained: %d left", len(tasks))
+	}
+}
+
+func TestBulk_RejectsCrossOrigin(t *testing.T) {
+	client := newTestRedis(t)
+	seedDeadLetters(t, client, 1)
+	srv := httptest.NewServer(Handler(chronos.NewInspector(client)))
+	defer srv.Close()
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/queues/default/bulk/delete?state=archived", nil)
+	req.Header.Set("Origin", "http://evil.example.com")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestSearch_RedirectsToTask(t *testing.T) {
+	client := newTestRedis(t)
+	id := seedScheduled(t, client)
+	srv := httptest.NewServer(Handler(chronos.NewInspector(client)))
+	defer srv.Close()
+	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	resp, err := noRedirect.Get(srv.URL + "/search?id=" + id)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); !strings.Contains(loc, "/tasks/"+id) {
+		t.Errorf("location = %s", loc)
+	}
+}
+
+func TestSchedulerPage(t *testing.T) {
+	client := newTestRedis(t)
+	client.Set(context.Background(), "chronos:leader", "inst-9", 0)
+	client.Set(context.Background(), "chronos:sched:jobx:last", 1700000000, 0)
+	srv := httptest.NewServer(Handler(chronos.NewInspector(client)))
+	defer srv.Close()
+	body := readBody(t, mustGet(t, srv.URL+"/scheduler"))
+	if !strings.Contains(body, "inst-9") || !strings.Contains(body, "jobx") {
+		t.Errorf("scheduler page missing data:\n%s", body)
 	}
 }

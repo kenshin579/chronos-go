@@ -29,6 +29,10 @@ func Handler(insp *chronos.Inspector) http.Handler {
 	mux.HandleFunc("GET /queues/{queue}/tasks/{id}", s.taskDetail)
 	mux.HandleFunc("POST /queues/{queue}/tasks/{id}/run", s.runTask)
 	mux.HandleFunc("POST /queues/{queue}/tasks/{id}/delete", s.deleteTask)
+	mux.HandleFunc("POST /queues/{queue}/bulk/run", s.bulkRun)
+	mux.HandleFunc("POST /queues/{queue}/bulk/delete", s.bulkDelete)
+	mux.HandleFunc("GET /search", s.search)
+	mux.HandleFunc("GET /scheduler", s.schedulerPage)
 	return mux
 }
 

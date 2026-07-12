@@ -35,6 +35,7 @@ var pages = map[string]*template.Template{
 	"dashboard": mustPage("dashboard"),
 	"queue":     mustPage("queue"),
 	"task":      mustPage("task"),
+	"scheduler": mustPage("scheduler"),
 }
 
 func mustPage(name string) *template.Template {

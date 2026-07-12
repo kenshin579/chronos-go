@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html/template"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/kenshin579/chronos-go"
 )
@@ -207,4 +209,89 @@ func (s *server) action(w http.ResponseWriter, r *http.Request, fn func(ctx, str
 		msg = "error: " + err.Error()
 	}
 	http.Redirect(w, r, "/queues/"+queue+"?msg="+url.QueryEscape(msg), http.StatusSeeOther)
+}
+
+// bulkLimit bounds how many tasks one bulk action processes (safety valve for
+// enormous backlogs — repeat the action to continue).
+const bulkLimit = 10000
+
+func (s *server) bulkRun(w http.ResponseWriter, r *http.Request) {
+	s.bulk(w, r, s.insp.RunTask, "re-ran")
+}
+
+func (s *server) bulkDelete(w http.ResponseWriter, r *http.Request) {
+	s.bulk(w, r, s.insp.DeleteTask, "deleted")
+}
+
+// bulk drains every task in the queue's given state through fn (same Origin
+// guard as single-task actions), then PRGs back with a summary.
+func (s *server) bulk(w http.ResponseWriter, r *http.Request, fn func(ctx, string, string) error, verb string) {
+	if o := r.Header.Get("Origin"); o != "" && o != "http://"+r.Host && o != "https://"+r.Host {
+		http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+		return
+	}
+	queue := r.PathValue("queue")
+	state := r.URL.Query().Get("state")
+	if state == "" {
+		state = "archived"
+	}
+	okCount, failCount := 0, 0
+	for okCount+failCount < bulkLimit {
+		tasks, err := s.insp.ListTasks(r.Context(), queue, state, listLimit)
+		if err != nil {
+			http.Redirect(w, r, "/queues/"+queue+"?state="+url.QueryEscape(state)+"&msg="+url.QueryEscape("bulk failed: "+err.Error()), http.StatusSeeOther)
+			return
+		}
+		if len(tasks) == 0 {
+			break
+		}
+		progressed := false
+		for _, tsk := range tasks {
+			if err := fn(r.Context(), queue, tsk.ID); err != nil {
+				failCount++
+			} else {
+				okCount++
+				progressed = true
+			}
+		}
+		if !progressed {
+			break // every item failed — avoid spinning forever on a poisoned list
+		}
+	}
+	msg := fmt.Sprintf("%d task(s) %s", okCount, verb)
+	if failCount > 0 {
+		msg += fmt.Sprintf(", %d failed", failCount)
+	}
+	http.Redirect(w, r, "/queues/"+queue+"?state="+url.QueryEscape(state)+"&msg="+url.QueryEscape(msg), http.StatusSeeOther)
+}
+
+// search finds a task by exact ID across every known queue and redirects to it.
+func (s *server) search(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if id == "" {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	queues, err := s.insp.Queues(r.Context())
+	if err == nil {
+		for _, q := range queues {
+			if _, gerr := s.insp.GetTask(r.Context(), q.Queue, id); gerr == nil {
+				http.Redirect(w, r, "/queues/"+q.Queue+"/tasks/"+id, http.StatusSeeOther)
+				return
+			}
+		}
+	}
+	http.Redirect(w, r, "/?msg="+url.QueryEscape("task not found: "+id), http.StatusSeeOther)
+}
+
+func (s *server) schedulerPage(w http.ResponseWriter, r *http.Request) {
+	st, err := s.insp.SchedulerStatus(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	render(w, "scheduler", struct {
+		pageData
+		Sched *chronos.SchedulerStatus
+	}{pageData{Title: "scheduler"}, st})
 }

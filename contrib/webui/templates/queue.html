@@ -9,6 +9,12 @@
   <input name="kind" value="{{.KindFilter}}" placeholder="filter by kind…">
   <button type="submit">Filter</button>
 </form>
+{{if eq .State "archived"}}
+<div class="bulkbar">
+  <form method="post" action="/queues/{{.Queue}}/bulk/run?state=archived" data-confirm="Re-run ALL archived tasks in {{.Queue}}?"><button>▶ Re-run all</button></form>
+  <form method="post" action="/queues/{{.Queue}}/bulk/delete?state=archived" data-confirm="Delete ALL archived tasks in {{.Queue}}? This cannot be undone."><button class="danger">Delete all</button></form>
+</div>
+{{end}}
 <table>
 <tr><th>ID</th><th>Kind</th><th>Error</th><th>When</th></tr>
 {{range .Tasks}}

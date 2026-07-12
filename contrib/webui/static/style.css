@@ -516,3 +516,8 @@ form { display: inline-block; margin: 4px 8px 0 0; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* bulk actions / scheduler page */
+.bulkbar { display: flex; gap: 8px; margin: 12px 0; }
+.muted { color: var(--muted); }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
