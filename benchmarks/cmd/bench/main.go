@@ -21,6 +21,8 @@ func main() {
 	concurrency := flag.Int("concurrency", 16, "server worker concurrency")
 	producers := flag.Int("producers", 4, "concurrent producers")
 	payload := flag.Int("payload", 100, "payload size (bytes)")
+	chainLen := flag.Int("chainlen", 10, "links per chain (chain scenario)")
+	groupSize := flag.Int("groupsize", 10, "members per group (group scenario)")
 	repeats := flag.Int("repeats", 3, "runs per scenario (median reported)")
 	redisAddr := flag.String("redis", "127.0.0.1:6379", "Redis address")
 	db := flag.Int("db", 15, "Redis DB (FLUSHED between runs — use a dedicated DB)")
@@ -32,7 +34,7 @@ func main() {
 		Tasks: *tasks, Concurrency: *concurrency,
 		Producers: *producers, PayloadSize: *payload,
 	}
-	s, err := pick(*target, *scenario)
+	s, err := pick(*target, *scenario, *chainLen, *groupSize)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "bench:", err)
 		os.Exit(2)
@@ -51,7 +53,7 @@ func main() {
 
 // pick maps target×scenario to an implementation. asynq scenarios are wired in
 // a later task; until then they return an error.
-func pick(target, scenario string) (bench.Scenario, error) {
+func pick(target, scenario string, chainLen, groupSize int) (bench.Scenario, error) {
 	switch target {
 	case "chronos":
 		switch scenario {
@@ -59,6 +61,10 @@ func pick(target, scenario string) (bench.Scenario, error) {
 			return chronosbench.Enqueue(), nil
 		case "e2e":
 			return chronosbench.E2E(), nil
+		case "chain":
+			return chronosbench.Chain(chainLen), nil
+		case "group":
+			return chronosbench.Group(groupSize), nil
 		}
 	case "asynq":
 		return nil, fmt.Errorf("asynq scenarios not wired yet")
