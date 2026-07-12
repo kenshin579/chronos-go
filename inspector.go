@@ -112,6 +112,11 @@ func (i *Inspector) GetTask(ctx context.Context, qname, taskID string) (*TaskInf
 			ti.NextProcessAt = time.Unix(int64(score), 0)
 		}
 	}
+	if msg.GroupID != "" && msg.GroupQueue != "" {
+		if n, perr := i.rdb.GroupPending(ctx, msg.GroupQueue, msg.GroupID); perr == nil {
+			ti.GroupPending = int(n)
+		}
+	}
 	return ti, nil
 }
 
@@ -131,6 +136,7 @@ func taskInfoFromMsg(m *base.TaskMessage) *TaskInfo {
 		ti.CompletedAt = time.Unix(m.CompletedAt, 0)
 	}
 	ti.ChainPending = len(m.Chain)
+	ti.GroupID = m.GroupID
 	return ti
 }
 
