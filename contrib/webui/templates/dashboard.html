@@ -1,13 +1,21 @@
 {{define "content"}}
-<h1>Queues</h1>
-<table>
-<tr><th>Queue</th><th>Pending</th><th>Active</th><th>Scheduled</th><th>Retry</th><th>Archived</th></tr>
+<div class="pagehead"><h1>Queues</h1>{{if .Msg}}<p class="flash">{{.Msg}}</p>{{end}}</div>
+<div class="qgrid" id="qgrid">
 {{range .Queues}}
-<tr>
-<td><a href="/queues/{{.Queue}}">{{.Queue}}</a></td>
-<td>{{.Pending}}</td><td>{{.Active}}</td><td>{{.Scheduled}}</td><td>{{.Retry}}</td>
-<td><a href="/queues/{{.Queue}}?state=archived">{{.Archived}}</a></td>
-</tr>
+  <a class="qcard{{if gt .Archived 0}} warn{{end}}" href="/queues/{{.Queue}}" data-queue="{{.Queue}}">
+    <div class="qname">{{.Queue}}</div>
+    <div class="qbig"><span class="num" data-stat="pending">{{.Pending}}</span><span class="unit">pending</span></div>
+    <div class="spark" data-spark="{{.Queue}}"></div>
+    <div class="qsub">
+      <span class="badge b-active" data-stat="active">{{.Active}} active</span>
+      <span class="badge b-sched" data-stat="scheduled">{{.Scheduled}} sched</span>
+      <span class="badge b-retry" data-stat="retry">{{.Retry}} retry</span>
+      <span class="badge b-dead" data-stat="archived">{{.Archived}} dead</span>
+      <span class="badge b-done" data-stat="completed">{{.Completed}} done</span>
+    </div>
+  </a>
 {{end}}
-</table>
+{{if not .Queues}}<div class="empty">No queues yet — enqueue a task to see it here.</div>{{end}}
+</div>
+<div class="schedbar">🗓 {{if .Sched}}{{if .Sched.LeaderID}}leader <b>{{.Sched.LeaderID}}</b> · {{len .Sched.Schedules}} schedule(s){{else}}no scheduler leader{{end}}{{else}}scheduler status unavailable{{end}} — <a href="/scheduler">details</a></div>
 {{end}}

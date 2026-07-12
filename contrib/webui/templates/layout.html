@@ -1,12 +1,21 @@
 {{define "layout"}}<!doctype html>
-<html lang="en">
+<html lang="en" data-theme="auto">
 <head>
 <meta charset="utf-8">
-<title>chronos-go — {{.Title}}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>chronos — {{.Title}}</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<header><a href="/">chronos-go console</a></header>
-<main>{{template "content" .}}</main>
+<header class="topbar">
+  <a class="brand" href="/">⏱ chronos</a>
+  <nav class="mainnav"><a href="/">Queues</a><a href="/scheduler">Scheduler</a></nav>
+  <form class="search" action="/search" method="get"><input name="id" placeholder="task id…" aria-label="search by task id"></form>
+  <span class="conn">{{.Conn}}</span>
+  <button id="refresh-toggle" class="iconbtn" title="auto refresh" type="button">●</button>
+  <button id="theme-toggle" class="iconbtn" title="theme" type="button">🌓</button>
+</header>
+<main class="page">{{template "content" .}}</main>
+<script src="/static/app.js" defer></script>
 </body>
 </html>{{end}}

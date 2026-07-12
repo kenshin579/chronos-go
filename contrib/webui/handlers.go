@@ -16,16 +16,33 @@ const listLimit = 100
 // ctx aliases context.Context to keep the action func signature readable.
 type ctx = context.Context
 
+// pageData carries fields every page needs (embedded by page-specific data).
+type pageData struct {
+	Title string
+	Conn  string
+}
+
 func (s *server) dashboard(w http.ResponseWriter, r *http.Request) {
 	queues, err := s.insp.Queues(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	sched, serr := s.insp.SchedulerStatus(r.Context())
+	if serr != nil {
+		sched = nil
+	}
 	render(w, "dashboard", struct {
-		Title  string
+		pageData
 		Queues []*chronos.QueueInfo
-	}{Title: "queues", Queues: queues})
+		Sched  *chronos.SchedulerStatus
+		Msg    string
+	}{
+		pageData: pageData{Title: "queues"},
+		Queues:   queues,
+		Sched:    sched,
+		Msg:      r.URL.Query().Get("msg"),
+	})
 }
 
 func (s *server) queueDetail(w http.ResponseWriter, r *http.Request) {
@@ -44,19 +61,19 @@ func (s *server) queueDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	render(w, "queue", struct {
-		Title  string
+		pageData
 		Queue  string
 		State  string
 		States []string
 		Tasks  []*chronos.TaskInfo
 		Msg    string
 	}{
-		Title:  queue,
-		Queue:  queue,
-		State:  state,
-		States: listStates,
-		Tasks:  tasks,
-		Msg:    r.URL.Query().Get("msg"),
+		pageData: pageData{Title: queue},
+		Queue:    queue,
+		State:    state,
+		States:   listStates,
+		Tasks:    tasks,
+		Msg:      r.URL.Query().Get("msg"),
 	})
 }
 func (s *server) taskDetail(w http.ResponseWriter, r *http.Request) {
@@ -72,13 +89,13 @@ func (s *server) taskDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	render(w, "task", struct {
-		Title   string
+		pageData
 		Task    *chronos.TaskInfo
 		Payload string
 	}{
-		Title:   id,
-		Task:    task,
-		Payload: formatPayload(task.Payload),
+		pageData: pageData{Title: id},
+		Task:     task,
+		Payload:  formatPayload(task.Payload),
 	})
 }
 

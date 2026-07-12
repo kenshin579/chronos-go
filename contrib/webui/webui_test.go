@@ -127,6 +127,29 @@ func seedDeadLetter(t *testing.T, client redis.UniversalClient) string {
 	return ""
 }
 
+func TestDashboard_CardGridWithWarning(t *testing.T) {
+	client := newTestRedis(t)
+	seedDeadLetter(t, client) // archived 1건 → 경고 카드
+
+	srv := httptest.NewServer(Handler(chronos.NewInspector(client)))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	body := readBody(t, resp)
+	if !strings.Contains(body, `qcard warn`) {
+		t.Errorf("dashboard missing warning card:\n%s", body)
+	}
+	if !strings.Contains(body, `data-theme`) {
+		t.Errorf("layout missing theme attribute")
+	}
+	if !strings.Contains(body, `schedbar`) {
+		t.Errorf("dashboard missing scheduler bar")
+	}
+}
+
 func TestTaskDetail_ShowsPayloadAndError(t *testing.T) {
 	client := newTestRedis(t)
 	id := seedDeadLetter(t, client)
