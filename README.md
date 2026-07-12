@@ -279,6 +279,17 @@ See [`docs/OBSERVING.md`](docs/OBSERVING.md) for Redis-level inspection.
 - **Keys** are wrapped in a `{queue}` hash tag so every multi-key Lua script is
   Redis Cluster-safe.
 
+## Performance
+
+On an M4 Pro with local Redis (100-byte payloads, defaults on both sides,
+median of 3), chronos-go processes **~15k tasks/s at concurrency 16** and
+**~20k at 64** end to end — about **2.5–4x asynq** at those settings, with
+enqueue throughput on par (~26k/s vs ~28k/s). Fetches are batched
+(`XREADGROUP COUNT` + pipelining), so throughput scales with worker
+concurrency; at low concurrency (C=1) asynq is ~1.5x faster. Full methodology,
+tables, and caveats: [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) — reproduce
+with `make bench`.
+
 ## Redis Cluster
 
 chronos-go works on Redis Cluster out of the box. Every key of a queue is
