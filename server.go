@@ -392,6 +392,17 @@ func (s *Server) process(ctx context.Context, qname, streamID string, msg *base.
 			// links that were already handed off.
 			msg.Chain = nil
 		}
+		// A group member reports its completion BEFORE acking, mirroring the
+		// chain rule and for the same reason: ack-then-crash must not lose the
+		// group's progress. The report is idempotent (SREM + create-if-absent
+		// callback), so redelivery cannot double-fire the callback.
+		if msg.GroupID != "" {
+			if gerr := s.completeGroupWithRetry(opCtx, msg); gerr != nil {
+				s.logger.Error("chronos: group completion report failed; leaving task for redelivery",
+					"id", msg.ID, "group", msg.GroupID, "error", gerr)
+				return
+			}
+		}
 		if derr := s.rdb.Done(opCtx, qname, streamID, msg); derr != nil {
 			s.logger.Error("chronos: ack failed", "id", msg.ID, "error", derr)
 		}
@@ -426,6 +437,28 @@ func (s *Server) enqueueNextWithRetry(ctx context.Context, msg *base.TaskMessage
 	var err error
 	for attempt, backoff := 0, 50*time.Millisecond; attempt < 3; attempt, backoff = attempt+1, backoff*4 {
 		if err = s.enqueueNext(ctx, msg); err == nil {
+			return nil
+		}
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
+			return err
+		}
+	}
+	return err
+}
+
+// completeGroupWithRetry reports a member's success with a short backoff, for
+// the same reason enqueueNextWithRetry exists: one transient Redis hiccup must
+// not park a succeeded task for the recoverer.
+func (s *Server) completeGroupWithRetry(ctx context.Context, msg *base.TaskMessage) error {
+	var err error
+	for attempt, backoff := 0, 50*time.Millisecond; attempt < 3; attempt, backoff = attempt+1, backoff*4 {
+		var fired bool
+		if fired, err = s.rdb.CompleteGroupMember(ctx, msg); err == nil {
+			if fired {
+				s.logger.Debug("chronos: group callback fired", "group", msg.GroupID)
+			}
 			return nil
 		}
 		select {
