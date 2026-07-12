@@ -34,6 +34,9 @@ long processing.
 - **Weighted priority queues** — queue weights are honored via smooth weighted
   round-robin (no starvation), or set `StrictPriority` to always drain
   higher-weight queues first.
+- **Chains** — run tasks in sequence (`NewChain().Then(...).Then(...)`); a link
+  runs only after its predecessor succeeds, a failed link stops the chain, and
+  re-running its dead-letter resumes it.
 - **Heartbeat** — refreshes the lease and unique lock of in-flight tasks, so a
   long-running task is neither reclaimed nor loses its lock mid-processing.
 - **Self-cleaning** — a janitor trims dead-lettered and retained-completed
@@ -154,6 +157,31 @@ srv := chronos.NewServer(rdb, chronos.ServerConfig{
 
 With `StrictPriority: true`, higher-weight queues are always drained first; a
 lower-weight queue runs only while every higher one is empty.
+
+## Chains
+
+Run tasks strictly in sequence — each link is enqueued only when the previous
+one succeeds:
+
+```go
+info, err := chronos.NewChain().
+	Then(EncodeArgs{VideoID: "v1"}).
+	Then(ThumbnailArgs{VideoID: "v1"}, chronos.WithQueue("low")).
+	Then(NotifyArgs{UserID: "u1"}, chronos.WithRetention(time.Hour)).
+	Enqueue(ctx, client)
+```
+
+- Per-link options: queue, retries, retention, delay (`WithProcessIn` on a link
+  delays it relative to its predecessor's completion). `WithTaskID` and
+  `WithUnique` are rejected inside chains.
+- **Failure stops the chain.** When a link exhausts its retries and is
+  dead-lettered, its successors wait inside the dead-letter (`ChainPending` in
+  the Inspector shows how many). Re-run it (`chronos task run ...`) after fixing
+  the cause and the chain resumes from that point.
+- Handlers must stay idempotent (at-least-once); successors themselves are
+  enqueued at most once (deterministic IDs + create-if-absent).
+- Each link carries its remaining tail in its message, so very long chains grow
+  the message size — keep chains reasonably short.
 
 ## Scheduling (interval & cron)
 
@@ -281,7 +309,8 @@ crashes after finishing but before acking). **Make handlers idempotent.**
 - The unique lock is heartbeat-renewed only while a task is *actively
   processing*; while it waits in the scheduled/retry set, it is covered by its
   TTL — set the TTL comfortably above expected waiting time.
-- Not yet built: a web UI, workflows (chains/groups).
+- Not yet built: a web UI, task groups (parallel fan-out with a completion
+  callback — chains are supported).
 
 ## Development
 
