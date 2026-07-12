@@ -89,6 +89,17 @@ type TaskMessage struct {
 	ChainID string `json:"chain_id,omitempty"`
 	// ChainIndex is this task's position in its chain (0-based).
 	ChainIndex int `json:"chain_index,omitempty"`
+
+	// GroupID identifies the group this task is a member of ("" = not grouped).
+	// Member task IDs are deterministic ("<group_id>:m<i>"), the callback's is
+	// "<group_id>:cb".
+	GroupID string `json:"group_id,omitempty"`
+	// GroupQueue is the queue whose hash slot holds the group's pending-member
+	// SET (= the callback's queue), so a completing member knows where to report.
+	GroupQueue string `json:"group_queue,omitempty"`
+	// GroupCallback is the callback task snapshot, carried by every member; the
+	// member that empties the pending SET creates it (create-if-absent).
+	GroupCallback *ChainLink `json:"group_callback,omitempty"`
 }
 
 // EncodeMessage serializes a TaskMessage for storage in Redis.

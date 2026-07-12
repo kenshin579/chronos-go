@@ -133,3 +133,31 @@ func TestTaskMessage_ChainRoundTrips(t *testing.T) {
 		t.Errorf("link[0] = %+v", l)
 	}
 }
+
+func TestTaskMessage_GroupRoundTrips(t *testing.T) {
+	msg := &TaskMessage{
+		ID: "g:m0", Kind: "a", Queue: "default",
+		GroupID: "g", GroupQueue: "cbq",
+		GroupCallback: &ChainLink{Kind: "cb", Payload: []byte(`{"b":1}`), Queue: "cbq", MaxRetry: 25, Delay: 2},
+	}
+	encoded, err := EncodeMessage(msg)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	got, err := DecodeMessage(encoded)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.GroupID != "g" || got.GroupQueue != "cbq" || got.GroupCallback == nil {
+		t.Fatalf("group fields lost: %+v", got)
+	}
+	if got.GroupCallback.Kind != "cb" || got.GroupCallback.Delay != 2 {
+		t.Errorf("callback = %+v", got.GroupCallback)
+	}
+}
+
+func TestGroupKey(t *testing.T) {
+	if got, want := GroupKey("cbq", "g1"), "chronos:{cbq}:group:g1"; got != want {
+		t.Errorf("GroupKey = %q, want %q", got, want)
+	}
+}

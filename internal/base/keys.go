@@ -51,6 +51,13 @@ func CompletedKey(qname string) string {
 	return QueueKeyPrefix(qname) + "completed"
 }
 
+// GroupKey returns the SET key holding a group's pending member IDs. It lives
+// in the callback queue's hash slot so "remove member + fire callback when
+// empty" runs as one atomic (cluster-safe) script.
+func GroupKey(cbQueue, groupID string) string {
+	return QueueKeyPrefix(cbQueue) + "group:" + groupID
+}
+
 // ScheduledKey returns the ZSET key holding delayed tasks (score = process_at).
 func ScheduledKey(qname string) string {
 	return QueueKeyPrefix(qname) + "scheduled"
