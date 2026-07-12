@@ -42,7 +42,7 @@ func (r *RDB) EnqueuePeriodic(ctx context.Context, msg *base.TaskMessage, dedupK
 	if err != nil {
 		return err
 	}
-	if err := r.client.SAdd(ctx, base.QueuesKey(), msg.Queue).Err(); err != nil {
+	if err := r.registerQueue(ctx, msg.Queue); err != nil {
 		return err
 	}
 	ms := dedupTTL.Milliseconds()

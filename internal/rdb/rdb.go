@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -19,11 +20,30 @@ const ConsumerGroup = "chronos"
 // RDB wraps a Redis client with chronos-go's task operations.
 type RDB struct {
 	client redis.UniversalClient
+
+	// knownQueues caches queue names this instance has already registered in
+	// the global queue index (SADD chronos:queues), so the hot enqueue path
+	// pays that extra round trip only once per queue per process. Registration
+	// is idempotent, so a lost cache (new process) just re-registers.
+	knownQueues sync.Map // queue name -> struct{}
 }
 
 // NewRDB returns an RDB backed by the given Redis client.
 func NewRDB(client redis.UniversalClient) *RDB {
 	return &RDB{client: client}
+}
+
+// registerQueue adds qname to the global queue index, skipping the round trip
+// when this instance has already done so. See knownQueues.
+func (r *RDB) registerQueue(ctx context.Context, qname string) error {
+	if _, ok := r.knownQueues.Load(qname); ok {
+		return nil
+	}
+	if err := r.client.SAdd(ctx, base.QueuesKey(), qname).Err(); err != nil {
+		return err
+	}
+	r.knownQueues.Store(qname, struct{}{})
+	return nil
 }
 
 // Client exposes the underlying Redis client (used by higher layers for
@@ -54,9 +74,10 @@ func (r *RDB) Enqueue(ctx context.Context, msg *base.TaskMessage) error {
 		return err
 	}
 
-	// Register the queue name in the global index. Separate from the atomic
-	// script because QueuesKey has no hash tag (different cluster slot).
-	if err := r.client.SAdd(ctx, base.QueuesKey(), msg.Queue).Err(); err != nil {
+	// Register the queue name in the global index (cached — one round trip per
+	// queue per process). Separate from the atomic script because QueuesKey has
+	// no hash tag (different cluster slot).
+	if err := r.registerQueue(ctx, msg.Queue); err != nil {
 		return err
 	}
 

@@ -98,7 +98,7 @@ func (r *RDB) CompleteGroupMember(ctx context.Context, member *base.TaskMessage)
 	// command: QueuesKey has no hash tag). Doing it on every report is slightly
 	// wasteful for non-final members, but the reverse order would open a
 	// "callback created but never indexed" window if SAdd failed afterwards.
-	if err := r.client.SAdd(ctx, base.QueuesKey(), cb.Queue).Err(); err != nil {
+	if err := r.registerQueue(ctx, cb.Queue); err != nil {
 		return false, err
 	}
 
