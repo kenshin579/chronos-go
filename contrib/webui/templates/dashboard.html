@@ -5,13 +5,13 @@
   <a class="qcard{{if gt .Archived 0}} warn{{end}}" href="/queues/{{.Queue}}" data-queue="{{.Queue}}">
     <div class="qname">{{.Queue}}</div>
     <div class="qbig"><span class="num" data-stat="pending">{{.Pending}}</span><span class="unit">pending</span></div>
-    <div class="spark" data-spark="{{.Queue}}"></div>
+    <div class="spark" data-spark="{{.Queue}}">{{index $.Sparks .Queue}}</div>
     <div class="qsub">
-      <span class="badge b-active" data-stat="active">{{.Active}} active</span>
-      <span class="badge b-sched" data-stat="scheduled">{{.Scheduled}} sched</span>
-      <span class="badge b-retry" data-stat="retry">{{.Retry}} retry</span>
-      <span class="badge b-dead" data-stat="archived">{{.Archived}} dead</span>
-      <span class="badge b-done" data-stat="completed">{{.Completed}} done</span>
+      <span class="badge b-active"><b data-stat="active">{{.Active}}</b> active</span>
+      <span class="badge b-sched"><b data-stat="scheduled">{{.Scheduled}}</b> sched</span>
+      <span class="badge b-retry"><b data-stat="retry">{{.Retry}}</b> retry</span>
+      <span class="badge b-dead"><b data-stat="archived">{{.Archived}}</b> dead</span>
+      <span class="badge b-done"><b data-stat="completed">{{.Completed}}</b> done</span>
     </div>
   </a>
 {{end}}

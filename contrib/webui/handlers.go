@@ -5,10 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"html/template"
 	"net/http"
 	"net/url"
 
 	"github.com/kenshin579/chronos-go"
+)
+
+// sparkW/sparkH are the sparkline SVG dimensions used everywhere.
+const (
+	sparkW = 80
+	sparkH = 20
 )
 
 const listLimit = 100
@@ -32,17 +39,66 @@ func (s *server) dashboard(w http.ResponseWriter, r *http.Request) {
 	if serr != nil {
 		sched = nil
 	}
+	// template.HTML is safe here: the SVG is entirely server-generated from
+	// float samples (sparklineSVG), never from user input — no XSS surface.
+	sparks := make(map[string]template.HTML, len(queues))
+	for _, q := range queues {
+		s.sparks.push(q.Queue, float64(q.Pending+q.Active))
+		sparks[q.Queue] = template.HTML(s.sparks.svg(q.Queue, sparkW, sparkH))
+	}
 	render(w, "dashboard", struct {
 		pageData
 		Queues []*chronos.QueueInfo
 		Sched  *chronos.SchedulerStatus
+		Sparks map[string]template.HTML
 		Msg    string
 	}{
 		pageData: pageData{Title: "queues"},
 		Queues:   queues,
 		Sched:    sched,
+		Sparks:   sparks,
 		Msg:      r.URL.Query().Get("msg"),
 	})
+}
+
+// statsQueue is one queue's counters plus its server-rendered sparkline SVG.
+type statsQueue struct {
+	Queue     string `json:"queue"`
+	Pending   int64  `json:"pending"`
+	Active    int64  `json:"active"`
+	Scheduled int64  `json:"scheduled"`
+	Retry     int64  `json:"retry"`
+	Archived  int64  `json:"archived"`
+	Completed int64  `json:"completed"`
+	Spark     string `json:"spark"`
+}
+
+// apiStats returns per-queue counters as JSON and feeds the sparkline rings —
+// each poll is also a sample, so the pulse cadence follows the pollers.
+func (s *server) apiStats(w http.ResponseWriter, r *http.Request) {
+	queues, err := s.insp.Queues(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	out := make([]statsQueue, 0, len(queues))
+	for _, q := range queues {
+		s.sparks.push(q.Queue, float64(q.Pending+q.Active))
+		out = append(out, statsQueue{
+			Queue:     q.Queue,
+			Pending:   q.Pending,
+			Active:    q.Active,
+			Scheduled: q.Scheduled,
+			Retry:     q.Retry,
+			Archived:  q.Archived,
+			Completed: q.Completed,
+			Spark:     s.sparks.svg(q.Queue, sparkW, sparkH),
+		})
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if err := json.NewEncoder(w).Encode(map[string]any{"queues": out}); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }
 
 func (s *server) queueDetail(w http.ResponseWriter, r *http.Request) {

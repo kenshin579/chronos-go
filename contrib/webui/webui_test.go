@@ -2,6 +2,7 @@ package webui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -369,6 +370,35 @@ func TestQueueDetail_KindFilterAndIcons(t *testing.T) {
 	body = readBody(t, mustGet(t, srv.URL+"/queues/default?state=scheduled&kind=nope"))
 	if strings.Contains(body, "🔗") {
 		t.Errorf("kind filter did not exclude")
+	}
+}
+
+func TestAPIStats_JSON(t *testing.T) {
+	client := newTestRedis(t)
+	seedScheduled(t, client)
+	srv := httptest.NewServer(Handler(chronos.NewInspector(client)))
+	defer srv.Close()
+	resp := mustGet(t, srv.URL+"/api/stats")
+	defer resp.Body.Close()
+	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Errorf("content-type = %s", ct)
+	}
+	var payload struct {
+		Queues []struct {
+			Queue     string `json:"queue"`
+			Pending   int64  `json:"pending"`
+			Scheduled int64  `json:"scheduled"`
+			Spark     string `json:"spark"`
+		} `json:"queues"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(payload.Queues) == 0 || payload.Queues[0].Scheduled != 1 {
+		t.Errorf("payload = %+v", payload)
+	}
+	if !strings.Contains(payload.Queues[0].Spark, "<svg") {
+		t.Errorf("spark missing svg: %q", payload.Queues[0].Spark)
 	}
 }
 
