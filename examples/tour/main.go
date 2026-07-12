@@ -2,7 +2,7 @@
 // do: the core queue, reliability (retry / dead-letter), delayed + unique tasks,
 // the Inspector, the distributed scheduler with leader failover, the retention
 // janitor, the heartbeat, weighted priority queues, completed-task retention,
-// task chains, and task groups. It is not a test — it is meant to be *watched*:
+// task chains, task groups, and queue pause/resume. It is not a test — it is meant to be *watched*:
 // run it and read the output to see tasks being enqueued, processed, retried,
 // dead-lettered, delayed, deduplicated, scheduled across a leader hand-off,
 // auto-cleaned, and kept alive past RecoverMinIdle by the heartbeat.
@@ -477,6 +477,37 @@ func main() {
 	shutGroupCtx, cancelG := context.WithTimeout(context.Background(), 3*time.Second)
 	_ = gsrv.Shutdown(shutGroupCtx)
 	cancelG()
+
+	section("14) pause/resume: 큐 소비를 일시정지 — 쌓이는 게 보이고, 재개하면 이어서")
+	pmux2 := chronos.NewMux()
+	chronos.AddHandler(pmux2, func(ctx context.Context, t *chronos.Task[GreetArgs]) error {
+		fmt.Printf("   ▶ [pause-demo] %s 처리\n", t.Args.Name)
+		return nil
+	})
+	psrv2 := chronos.NewServer(rdb, chronos.ServerConfig{Queues: map[string]int{"pause-demo": 1}, Concurrency: 2})
+	if err := psrv2.Start(ctx, pmux2); err != nil {
+		fmt.Printf("pause 서버 start 실패: %v\n", err)
+	}
+	_ = insp.PauseQueue(ctx, "pause-demo")
+	fmt.Println("   ⏸ 큐 일시정지 → 태스크 3개 enqueue (소비되지 않음)")
+	time.Sleep(1500 * time.Millisecond) // pause 캐시 반영
+	for i := 1; i <= 3; i++ {
+		_, _ = chronos.Enqueue(ctx, client, GreetArgs{Name: fmt.Sprintf("대기-%d", i)}, chronos.WithQueue("pause-demo"))
+	}
+	time.Sleep(2 * time.Second)
+	if qs, err := insp.Queues(ctx); err == nil {
+		for _, q := range qs {
+			if q.Queue == "pause-demo" {
+				fmt.Printf("   pending=%d paused=%v (쌓여 있음)\n", q.Pending, q.Paused)
+			}
+		}
+	}
+	fmt.Println("   ▶ resume → 쌓인 3개가 이어서 처리:")
+	_ = insp.ResumeQueue(ctx, "pause-demo")
+	time.Sleep(2500 * time.Millisecond)
+	shutPause2, cancelP2 := context.WithTimeout(context.Background(), 3*time.Second)
+	_ = psrv2.Shutdown(shutPause2)
+	cancelP2()
 
 	fmt.Println("\n───────────────────────────────────────────────")
 	fmt.Println("투어 완료. 위 로그가 chronos-go가 실제로 동작하는 모습입니다.")
