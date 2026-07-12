@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
 
 // ring is a fixed-size ring buffer of samples (oldest evicted first).
@@ -35,20 +36,31 @@ func (r *ring) values() []float64 {
 }
 
 // sparkStore keeps one ring per queue. Samples live only as long as the UI
-// process — history belongs to Grafana, this is just a pulse.
+// process — history belongs to Grafana, this is just a pulse. Pushes are
+// rate-limited per queue so the time axis doesn't shrink with viewer count
+// (N browsers polling would otherwise mean N samples per tick).
 type sparkStore struct {
-	mu    sync.Mutex
-	rings map[string]*ring
-	size  int
+	mu       sync.Mutex
+	rings    map[string]*ring
+	lastPush map[string]time.Time
+	size     int
 }
 
 func newSparkStore(size int) *sparkStore {
-	return &sparkStore{rings: map[string]*ring{}, size: size}
+	return &sparkStore{rings: map[string]*ring{}, lastPush: map[string]time.Time{}, size: size}
 }
+
+// minPushInterval drops samples arriving faster than this per queue.
+const minPushInterval = time.Second
 
 func (s *sparkStore) push(queue string, v float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := time.Now()
+	if last, ok := s.lastPush[queue]; ok && now.Sub(last) < minPushInterval {
+		return
+	}
+	s.lastPush[queue] = now
 	r, ok := s.rings[queue]
 	if !ok {
 		r = newRing(s.size)
@@ -59,8 +71,8 @@ func (s *sparkStore) push(queue string, v float64) {
 
 func (s *sparkStore) svg(queue string, w, h int) string {
 	s.mu.Lock()
+	defer s.mu.Unlock() // values() reads ring internals — must stay under the lock
 	r, ok := s.rings[queue]
-	s.mu.Unlock()
 	if !ok {
 		return ""
 	}

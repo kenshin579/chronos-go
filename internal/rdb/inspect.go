@@ -109,8 +109,11 @@ type ScheduleFireInfo struct {
 // The keys carry no hash tag, so on a cluster they spread across slots — scan
 // every master.
 func (r *RDB) ScanSchedules(ctx context.Context) ([]ScheduleFireInfo, error) {
-	const prefix = "chronos:sched:"
-	const suffix = ":last"
+	// Derive the scan pattern (and trim bounds) from the canonical key builder
+	// so a key-shape change cannot silently break this scan.
+	pattern := base.ScheduleLastFiredKey("*")
+	star := strings.Index(pattern, "*")
+	prefix, suffix := pattern[:star], pattern[star+1:]
 
 	collect := func(ctx context.Context, c redis.UniversalClient, out *[]ScheduleFireInfo, mu *sync.Mutex) error {
 		iter := c.Scan(ctx, 0, prefix+"*"+suffix, 100).Iterator()

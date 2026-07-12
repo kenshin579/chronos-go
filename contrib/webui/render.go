@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"bytes"
 	"embed"
 	"html/template"
 	"net/http"
@@ -23,10 +24,11 @@ var tmplFuncs = template.FuncMap{
 		return out
 	},
 	"trunc": func(s string, n int) string {
-		if len(s) <= n {
+		r := []rune(s) // rune-wise: byte slicing would cut multi-byte text mid-rune
+		if len(r) <= n {
 			return s
 		}
-		return s[:n] + "…"
+		return string(r[:n]) + "…"
 	},
 }
 
@@ -50,8 +52,13 @@ func render(w http.ResponseWriter, page string, data any) {
 		http.Error(w, "unknown page: "+page, http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := t.ExecuteTemplate(w, "layout", data); err != nil {
+	// Render to a buffer first: a template error mid-stream would otherwise
+	// leave partial HTML followed by a broken http.Error.
+	var buf bytes.Buffer
+	if err := t.ExecuteTemplate(&buf, "layout", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = buf.WriteTo(w)
 }

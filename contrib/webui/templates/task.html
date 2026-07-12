@@ -20,8 +20,12 @@
 {{end}}
 {{if .Task.GroupID}}
 <div class="panel">
+  {{if .GroupLookupOK}}
   <div class="label">🧩 GROUP {{.Task.GroupID}} — {{len .GroupMembers}} member(s) still pending</div>
   <div class="member-grid">{{range .GroupMembers}}<span class="member">{{.}}</span>{{end}}</div>
+  {{else}}
+  <div class="label">🧩 GROUP {{.Task.GroupID}} — status unavailable</div>
+  {{end}}
 </div>
 {{end}}
 <h2>Payload</h2>

@@ -48,11 +48,17 @@ actions require a browser confirmation, but neither replaces authentication.
 
 ## Mounting in your own server
 
+The console uses absolute URLs (`/static/…`, `/api/stats`, redirects), so it
+must be mounted at the **root** of its host (a dedicated port or subdomain):
+
 ```go
-mux := http.NewServeMux()
-mux.Handle("/chronos/", http.StripPrefix("/chronos",
-	webui.Handler(insp, webui.WithConnInfo("prod cluster"))))
+srv := &http.Server{
+	Addr:    "127.0.0.1:8080",
+	Handler: webui.Handler(insp, webui.WithConnInfo("prod cluster")),
+}
 ```
+
+Path-prefix mounting (e.g. `/chronos/` via `StripPrefix`) is not supported yet.
 
 ## Notes
 

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -528,4 +529,32 @@ func TestClusterSmoke_Dashboard(t *testing.T) {
 	if body := readBody(t, resp); !strings.Contains(body, "cluster (test)") {
 		t.Errorf("conn label missing")
 	}
+}
+
+// TestAPIStats_ConcurrentPolling guards the sparkStore race: two browser tabs
+// polling /api/stats concurrently must not trip the race detector (push vs
+// values on the same ring).
+func TestAPIStats_ConcurrentPolling(t *testing.T) {
+	client := newTestRedis(t)
+	seedScheduled(t, client)
+	srv := httptest.NewServer(Handler(chronos.NewInspector(client)))
+	defer srv.Close()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 10; j++ {
+				resp, err := http.Get(srv.URL + "/api/stats")
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				_, _ = io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+			}
+		}()
+	}
+	wg.Wait()
 }

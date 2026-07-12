@@ -158,21 +158,27 @@ func (s *server) taskDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var members []string
+	groupLookupOK := true
 	if task.GroupID != "" && task.GroupQueue != "" {
-		if m, merr := s.insp.GroupMembers(r.Context(), task.GroupQueue, task.GroupID); merr == nil {
+		m, merr := s.insp.GroupMembers(r.Context(), task.GroupQueue, task.GroupID)
+		if merr != nil {
+			groupLookupOK = false // 실패를 "0명 남음(완료)"처럼 보이게 하지 않는다
+		} else {
 			members = m
 		}
 	}
 	render(w, "task", struct {
 		pageData
-		Task         *chronos.TaskInfo
-		Payload      string
-		GroupMembers []string
+		Task          *chronos.TaskInfo
+		Payload       string
+		GroupMembers  []string
+		GroupLookupOK bool
 	}{
-		pageData:     pageData{Title: id, Conn: s.conn},
-		Task:         task,
-		Payload:      formatPayload(task.Payload),
-		GroupMembers: members,
+		pageData:      pageData{Title: id, Conn: s.conn},
+		Task:          task,
+		Payload:       formatPayload(task.Payload),
+		GroupMembers:  members,
+		GroupLookupOK: groupLookupOK,
 	})
 }
 
@@ -235,19 +241,31 @@ func (s *server) bulk(w http.ResponseWriter, r *http.Request, fn func(ctx, strin
 	if state == "" {
 		state = "archived"
 	}
+	// Bulk stays limited to failure states: wiping thousands of scheduled or
+	// retained-completed tasks in one unauthenticated POST is a footgun the UI
+	// never offers — reject it server-side too.
+	if state != "archived" && state != "retry" {
+		http.Error(w, "bulk actions are limited to archived|retry", http.StatusBadRequest)
+		return
+	}
 	okCount, failCount := 0, 0
+	failed := map[string]bool{} // don't re-count (or re-attempt) tasks that already failed
 	for okCount+failCount < bulkLimit {
 		tasks, err := s.insp.ListTasks(r.Context(), queue, state, listLimit)
 		if err != nil {
 			http.Redirect(w, r, "/queues/"+queue+"?state="+url.QueryEscape(state)+"&msg="+url.QueryEscape("bulk failed: "+err.Error()), http.StatusSeeOther)
 			return
 		}
-		if len(tasks) == 0 {
-			break
-		}
 		progressed := false
 		for _, tsk := range tasks {
+			if okCount+failCount >= bulkLimit {
+				break
+			}
+			if failed[tsk.ID] {
+				continue
+			}
 			if err := fn(r.Context(), queue, tsk.ID); err != nil {
+				failed[tsk.ID] = true
 				failCount++
 			} else {
 				okCount++
@@ -255,7 +273,7 @@ func (s *server) bulk(w http.ResponseWriter, r *http.Request, fn func(ctx, strin
 			}
 		}
 		if !progressed {
-			break // every item failed — avoid spinning forever on a poisoned list
+			break // nothing new succeeded this pass — remaining items are stuck
 		}
 	}
 	msg := fmt.Sprintf("%d task(s) %s", okCount, verb)

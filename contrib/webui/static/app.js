@@ -27,7 +27,7 @@
     var timer = null;
 
     function render(q) {
-      var card = grid.querySelector('[data-queue="' + q.queue + '"]');
+      var card = grid.querySelector('[data-queue="' + CSS.escape(q.queue) + '"]');
       if (!card) return; // 새 큐는 다음 페이지 로드에서
       var map = { pending: q.pending, active: q.active, scheduled: q.scheduled, retry: q.retry, archived: q.archived, completed: q.completed };
       Object.keys(map).forEach(function (k) {
