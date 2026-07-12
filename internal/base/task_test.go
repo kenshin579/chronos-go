@@ -107,3 +107,29 @@ func TestTaskMessage_LastErrRoundTrips(t *testing.T) {
 		t.Errorf("LastErr = %q, want %q", got.LastErr, "boom: timeout")
 	}
 }
+
+func TestTaskMessage_ChainRoundTrips(t *testing.T) {
+	msg := &TaskMessage{
+		ID: "ch:0", Kind: "a", Queue: "default",
+		ChainID: "ch", ChainIndex: 0,
+		Chain: []ChainLink{
+			{Kind: "b", Payload: []byte(`{"n":2}`), Queue: "low", MaxRetry: 5, Retention: 60, Delay: 3},
+			{Kind: "c", Payload: []byte(`{"n":3}`), Queue: "default", MaxRetry: 25},
+		},
+	}
+	encoded, err := EncodeMessage(msg)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	got, err := DecodeMessage(encoded)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.ChainID != "ch" || got.ChainIndex != 0 || len(got.Chain) != 2 {
+		t.Fatalf("chain fields lost: %+v", got)
+	}
+	l := got.Chain[0]
+	if l.Kind != "b" || l.Queue != "low" || l.MaxRetry != 5 || l.Retention != 60 || l.Delay != 3 {
+		t.Errorf("link[0] = %+v", l)
+	}
+}
