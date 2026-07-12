@@ -1,8 +1,8 @@
 // Command tour is a narrated, runnable walkthrough of everything chronos-go can
 // do: the core queue, reliability (retry / dead-letter), delayed + unique tasks,
 // the Inspector, the distributed scheduler with leader failover, the retention
-// janitor, the heartbeat, weighted priority queues, and completed-task
-// retention. It is not a test — it is meant to be *watched*:
+// janitor, the heartbeat, weighted priority queues, completed-task retention,
+// and task chains. It is not a test — it is meant to be *watched*:
 // run it and read the output to see tasks being enqueued, processed, retried,
 // dead-lettered, delayed, deduplicated, scheduled across a leader hand-off,
 // auto-cleaned, and kept alive past RecoverMinIdle by the heartbeat.
@@ -73,6 +73,13 @@ type PrioArgs struct {
 }
 
 func (PrioArgs) Kind() string { return "demo:prio" }
+
+// ChainStepArgs is one step of the chain demo.
+type ChainStepArgs struct {
+	Step int `json:"step"`
+}
+
+func (ChainStepArgs) Kind() string { return "demo:chainstep" }
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
@@ -369,6 +376,47 @@ func main() {
 	shutRetCtx, cancelR := context.WithTimeout(context.Background(), 3*time.Second)
 	_ = rsrv.Shutdown(shutRetCtx)
 	cancelR()
+
+	section("12) chain: A 성공 → B → C 연쇄 실행, 실패하면 중단 + 재실행으로 재개")
+	var chainFail atomic.Bool
+	chainFail.Store(true)
+	cmux := chronos.NewMux()
+	chronos.AddHandler(cmux, func(ctx context.Context, t *chronos.Task[ChainStepArgs]) error {
+		if t.Args.Step == 2 && chainFail.Load() {
+			fmt.Printf("   💥 [chain] %d단계 실패 — 체인 중단 (뒤 단계는 대기)\n", t.Args.Step)
+			return errors.New("2단계 오류")
+		}
+		fmt.Printf("   🔗 [chain] %d단계 실행\n", t.Args.Step)
+		return nil
+	})
+	csrv := chronos.NewServer(rdb, chronos.ServerConfig{
+		Queues:      map[string]int{"chain-demo": 1},
+		Concurrency: 2,
+	})
+	if err := csrv.Start(ctx, cmux); err != nil {
+		fmt.Printf("chain 서버 start 실패: %v\n", err)
+	}
+	if _, err := chronos.NewChain().
+		Then(ChainStepArgs{Step: 1}, chronos.WithQueue("chain-demo")).
+		Then(ChainStepArgs{Step: 2}, chronos.WithQueue("chain-demo"), chronos.WithMaxRetry(0)).
+		Then(ChainStepArgs{Step: 3}, chronos.WithQueue("chain-demo")).
+		Enqueue(ctx, client); err != nil {
+		fmt.Printf("chain enqueue 실패: %v\n", err)
+	}
+	time.Sleep(1500 * time.Millisecond) // 1단계 성공, 2단계 dead-letter
+	tasks, _ := insp.ListTasks(ctx, "chain-demo", "archived", 10)
+	for _, ti := range tasks {
+		fmt.Printf("   📮 dead-letter: %s (뒤에 %d단계 대기 중)\n", ti.ID, ti.ChainPending)
+		chainFail.Store(false)
+		fmt.Println("   원인 해소 후 RunTask로 재실행 → 체인 재개:")
+		if err := insp.RunTask(ctx, "chain-demo", ti.ID); err != nil {
+			fmt.Printf("   run 실패: %v\n", err)
+		}
+	}
+	time.Sleep(1500 * time.Millisecond) // 2단계 재실행 + 3단계 완주
+	shutChainCtx, cancelC := context.WithTimeout(context.Background(), 3*time.Second)
+	_ = csrv.Shutdown(shutChainCtx)
+	cancelC()
 
 	fmt.Println("\n───────────────────────────────────────────────")
 	fmt.Println("투어 완료. 위 로그가 chronos-go가 실제로 동작하는 모습입니다.")

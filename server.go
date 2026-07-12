@@ -372,6 +372,26 @@ func (s *Server) process(ctx context.Context, qname, streamID string, msg *base.
 	defer cancel()
 
 	if err == nil {
+		// A chained task must enqueue its successor BEFORE acking: if we acked
+		// first and crashed, the chain would be lost. The reverse order is safe
+		// because successor creation is idempotent (deterministic ID +
+		// create-if-absent), so a redelivery cannot duplicate it.
+		if len(msg.Chain) > 0 {
+			if cerr := s.enqueueNextWithRetry(opCtx, msg); cerr != nil {
+				// Leave the task unacked: the recoverer will redeliver it, the
+				// (idempotent) handler runs again, and the successor enqueue is
+				// retried. Note the reclaim consumes retry budget, so automatic
+				// resumption needs budget left; the chain tail survives in the
+				// archived message either way (manual RunTask resumes it).
+				s.logger.Error("chronos: chain successor enqueue failed; leaving task for redelivery",
+					"id", msg.ID, "error", cerr)
+				return
+			}
+			// The successor now exists; drop the tail from this task's message so
+			// a retained (WithRetention) copy doesn't advertise — or re-run —
+			// links that were already handed off.
+			msg.Chain = nil
+		}
 		if derr := s.rdb.Done(opCtx, qname, streamID, msg); derr != nil {
 			s.logger.Error("chronos: ack failed", "id", msg.ID, "error", derr)
 		}
@@ -397,6 +417,51 @@ func (s *Server) process(ctx context.Context, qname, streamID string, msg *base.
 		s.logger.Error("chronos: retry scheduling failed", "id", msg.ID, "error", rerr)
 	}
 	s.observe(msg, OutcomeRetry, dur)
+}
+
+// enqueueNextWithRetry attempts the successor enqueue a few times with a short
+// backoff: one transient Redis hiccup must not park a *succeeded* task for the
+// recoverer (whose reclaim consumes retry budget).
+func (s *Server) enqueueNextWithRetry(ctx context.Context, msg *base.TaskMessage) error {
+	var err error
+	for attempt, backoff := 0, 50*time.Millisecond; attempt < 3; attempt, backoff = attempt+1, backoff*4 {
+		if err = s.enqueueNext(ctx, msg); err == nil {
+			return nil
+		}
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
+			return err
+		}
+	}
+	return err
+}
+
+// enqueueNext makes msg's first pending chain link available, carrying the rest
+// of the tail. Idempotent: the successor's deterministic ID plus the
+// create-if-absent script mean a redelivered predecessor cannot duplicate it.
+func (s *Server) enqueueNext(ctx context.Context, msg *base.TaskMessage) error {
+	link := msg.Chain[0]
+	next := &base.TaskMessage{
+		ID:         fmt.Sprintf("%s:%d", msg.ChainID, msg.ChainIndex+1),
+		Kind:       link.Kind,
+		Payload:    link.Payload,
+		Queue:      link.Queue,
+		MaxRetry:   link.MaxRetry,
+		NoArchive:  link.NoArchive,
+		Retention:  link.Retention,
+		Chain:      msg.Chain[1:],
+		ChainID:    msg.ChainID,
+		ChainIndex: msg.ChainIndex + 1,
+	}
+	enqueued, err := s.rdb.EnqueueChainLink(ctx, next, time.Duration(link.Delay)*time.Second)
+	if err != nil {
+		return err
+	}
+	if !enqueued {
+		s.logger.Debug("chronos: chain successor already exists (redelivery)", "id", next.ID)
+	}
+	return nil
 }
 
 func (s *Server) trackInflight(id string, e inflightEntry) {

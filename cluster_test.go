@@ -21,6 +21,7 @@ package chronos
 //  [x] QueueStats/Queues/ListZSetTasks/GetTask              → TestCluster_InspectorQueries
 //  [x] two queues on different slots (MOVED redirects)      → TestCluster_TwoQueuesDifferentSlots
 //  [x] Done retention (moveToZSetCmd) + TrimCompleted       → TestCluster_CompletedRetention
+//  [x] chainEnqueueCmd/chainScheduleCmd (chain successor)   → TestCluster_ChainCompletes
 
 import (
 	"context"
@@ -550,5 +551,40 @@ func TestCluster_CompletedRetention(t *testing.T) {
 	waitFor(t, 10*time.Second, "completed task trimmed", func() bool {
 		_, gerr := insp.GetTask(ctx, "retq", info.ID)
 		return gerr != nil
+	})
+}
+
+func TestCluster_ChainCompletes(t *testing.T) {
+	client := testutil.NewClusterRedis(t)
+	c := NewClient(client)
+	defer c.Close()
+	ctx := context.Background()
+
+	var done atomic.Int32
+	mux := NewMux()
+	AddHandler(mux, func(ctx context.Context, task *Task[clArgs]) error {
+		done.Add(1)
+		return nil
+	})
+	// 서로 다른 슬롯의 큐 두 개에 걸친 체인 — 후속 enqueue가 슬롯을 넘나든다.
+	srv := NewServer(client, ServerConfig{
+		Queues:          map[string]int{"alpha": 1, "bravo": 1},
+		Concurrency:     2,
+		ForwardInterval: 200 * time.Millisecond,
+	})
+	if err := srv.Start(ctx, mux); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	if _, err := NewChain().
+		Then(clArgs{N: 21}, WithQueue("alpha")).
+		Then(clArgs{N: 22}, WithQueue("bravo")).
+		Then(clArgs{N: 23}, WithQueue("alpha")).
+		Enqueue(ctx, c); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	waitFor(t, 10*time.Second, "3-link chain completes across slots", func() bool {
+		return done.Load() == 3
 	})
 }

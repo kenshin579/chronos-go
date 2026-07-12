@@ -34,6 +34,20 @@ func (s TaskState) String() string {
 	}
 }
 
+// ChainLink is one pending successor task, carried inside its predecessor's
+// message (so a dead-lettered link that is re-run naturally resumes the chain).
+// It is a serializable snapshot of the enqueue parameters taken when the chain
+// was built.
+type ChainLink struct {
+	Kind      string `json:"kind"`
+	Payload   []byte `json:"payload"`
+	Queue     string `json:"queue"`
+	MaxRetry  int    `json:"max_retry"`
+	NoArchive bool   `json:"no_archive,omitempty"`
+	Retention int64  `json:"retention,omitempty"` // seconds
+	Delay     int64  `json:"delay,omitempty"`     // seconds before the link runs
+}
+
 // TaskMessage is the canonical, serialized representation of a task stored in
 // the task HASH.
 type TaskMessage struct {
@@ -64,6 +78,17 @@ type TaskMessage struct {
 	// CompletedAt is the unix time the task finished successfully. Set only
 	// when the task is kept (Retention > 0).
 	CompletedAt int64 `json:"completed_at,omitempty"`
+
+	// Chain holds this task's pending successors: Chain[0] is enqueued when
+	// this task succeeds, carrying Chain[1:] as its own tail. Empty for tasks
+	// outside a chain and for the last link.
+	Chain []ChainLink `json:"chain,omitempty"`
+	// ChainID identifies the chain this task belongs to; successor task IDs are
+	// deterministic ("<chain_id>:<index>") so a redelivered predecessor cannot
+	// enqueue its successor twice.
+	ChainID string `json:"chain_id,omitempty"`
+	// ChainIndex is this task's position in its chain (0-based).
+	ChainIndex int `json:"chain_index,omitempty"`
 }
 
 // EncodeMessage serializes a TaskMessage for storage in Redis.

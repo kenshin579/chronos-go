@@ -130,6 +130,7 @@ func taskInfoFromMsg(m *base.TaskMessage) *TaskInfo {
 	if m.CompletedAt > 0 {
 		ti.CompletedAt = time.Unix(m.CompletedAt, 0)
 	}
+	ti.ChainPending = len(m.Chain)
 	return ti
 }
 
