@@ -59,6 +59,8 @@ type TaskInfo struct {
 	LastErr       string    // most recent failure message ("" if none)
 	NextProcessAt time.Time // ZSET score as a time: scheduled-for / retry-at / died-at / expires-at (completed)
 	CompletedAt   time.Time // when the task finished successfully (zero unless retained)
+
+	ChainPending int // number of chain links still queued behind this task (0 = none/last)
 }
 
 // Client enqueues tasks.
@@ -211,29 +213,32 @@ func Enqueue[T TaskArgs](ctx context.Context, c *Client, args T, opts ...Option)
 		NoArchive: options.noArchive,
 		Retention: int64(options.retention / time.Second),
 	}
+	if err := dispatchMessage(ctx, c, msg, options); err != nil {
+		return nil, err
+	}
+
+	return &TaskInfo{ID: id, Kind: msg.Kind, Queue: msg.Queue}, nil
+}
+
+// dispatchMessage routes an assembled message to the right rdb enqueue path
+// (immediate / scheduled / unique variants), shared by Enqueue and Chain.
+func dispatchMessage(ctx context.Context, c *Client, msg *base.TaskMessage, options enqueueOptions) error {
 	scheduled := !options.processAt.IsZero() && options.processAt.After(time.Now())
 	unique := options.uniqueTTL > 0
 	if unique {
-		msg.UniqueKey = base.UniqueKey(options.queue, base.UniqueSuffix(msg.Kind, payload))
+		msg.UniqueKey = base.UniqueKey(msg.Queue, base.UniqueSuffix(msg.Kind, msg.Payload))
 	}
-
-	var err2 error
 	switch {
 	case unique && scheduled:
 		// The lock must outlive the delay, or it would expire before the task is
 		// even promoted, silently breaking dedup. Extend it to cover the delay
 		// plus the caller's ttl (the post-availability safety window).
-		err2 = c.rdb.ScheduleUnique(ctx, msg, options.processAt, options.uniqueTTL+time.Until(options.processAt))
+		return c.rdb.ScheduleUnique(ctx, msg, options.processAt, options.uniqueTTL+time.Until(options.processAt))
 	case unique:
-		err2 = c.rdb.EnqueueUnique(ctx, msg, options.uniqueTTL)
+		return c.rdb.EnqueueUnique(ctx, msg, options.uniqueTTL)
 	case scheduled:
-		err2 = c.rdb.Schedule(ctx, msg, options.processAt)
+		return c.rdb.Schedule(ctx, msg, options.processAt)
 	default:
-		err2 = c.rdb.Enqueue(ctx, msg)
+		return c.rdb.Enqueue(ctx, msg)
 	}
-	if err2 != nil {
-		return nil, err2
-	}
-
-	return &TaskInfo{ID: id, Kind: msg.Kind, Queue: msg.Queue}, nil
 }
