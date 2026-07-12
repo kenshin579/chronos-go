@@ -60,20 +60,31 @@ func (s *server) queueDetail(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if kf := r.URL.Query().Get("kind"); kf != "" {
+		kept := tasks[:0]
+		for _, t := range tasks {
+			if t.Kind == kf {
+				kept = append(kept, t)
+			}
+		}
+		tasks = kept
+	}
 	render(w, "queue", struct {
 		pageData
-		Queue  string
-		State  string
-		States []string
-		Tasks  []*chronos.TaskInfo
-		Msg    string
+		Queue      string
+		State      string
+		States     []string
+		Tasks      []*chronos.TaskInfo
+		Msg        string
+		KindFilter string
 	}{
-		pageData: pageData{Title: queue},
-		Queue:    queue,
-		State:    state,
-		States:   listStates,
-		Tasks:    tasks,
-		Msg:      r.URL.Query().Get("msg"),
+		pageData:   pageData{Title: queue},
+		Queue:      queue,
+		State:      state,
+		States:     listStates,
+		Tasks:      tasks,
+		Msg:        r.URL.Query().Get("msg"),
+		KindFilter: r.URL.Query().Get("kind"),
 	})
 }
 func (s *server) taskDetail(w http.ResponseWriter, r *http.Request) {
@@ -88,14 +99,22 @@ func (s *server) taskDetail(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	var members []string
+	if task.GroupID != "" && task.GroupQueue != "" {
+		if m, merr := s.insp.GroupMembers(r.Context(), task.GroupQueue, task.GroupID); merr == nil {
+			members = m
+		}
+	}
 	render(w, "task", struct {
 		pageData
-		Task    *chronos.TaskInfo
-		Payload string
+		Task         *chronos.TaskInfo
+		Payload      string
+		GroupMembers []string
 	}{
-		pageData: pageData{Title: id},
-		Task:     task,
-		Payload:  formatPayload(task.Payload),
+		pageData:     pageData{Title: id},
+		Task:         task,
+		Payload:      formatPayload(task.Payload),
+		GroupMembers: members,
 	})
 }
 

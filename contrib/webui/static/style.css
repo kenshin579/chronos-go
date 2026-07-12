@@ -412,3 +412,107 @@ button:hover { filter: brightness(1.1); }
 button.danger { background: var(--c-dead); }
 
 form { display: inline-block; margin: 4px 8px 0 0; }
+
+/* ---------- panels (chain / group blocks on task detail) ---------- */
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin: 12px 0;
+  box-shadow: var(--shadow);
+}
+
+.label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+/* ---------- chain stepper ---------- */
+
+.stepper {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.step .dot {
+  width: 28px;
+  height: 28px;
+  line-height: 28px;
+  border-radius: 50%;
+  text-align: center;
+  font-size: 13px;
+}
+
+.step.done .dot { background: var(--c-done); color: #fff; }
+.step.fail .dot { background: var(--c-dead); color: #fff; }
+.step.cur .dot  { background: var(--accent); color: #fff; }
+.step.wait .dot { background: transparent; border: 2px solid var(--muted); line-height: 24px; }
+
+.bar {
+  flex: 1;
+  height: 2px;
+  background: var(--muted);
+  min-width: 24px;
+}
+
+.bar.done { background: var(--c-done); }
+
+.step .name { font-size: 11px; }
+.step.wait .name { color: var(--muted); }
+
+/* ---------- group member grid ---------- */
+
+.member-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.member {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+}
+
+/* ---------- queue filter bar & error cell ---------- */
+
+.filterbar {
+  display: flex;
+  gap: 8px;
+  margin: 12px 0 0;
+}
+
+.filterbar input[name="kind"] {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px 12px;
+  font-size: 13px;
+}
+
+.errcell {
+  color: var(--c-dead);
+  opacity: 0.85;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

@@ -4,16 +4,22 @@
 <nav class="states">
 {{range .States}}<a href="/queues/{{$.Queue}}?state={{.}}" {{if eq . $.State}}class="active"{{end}}>{{.}}</a> {{end}}
 </nav>
+<form class="filterbar" method="get" action="/queues/{{.Queue}}">
+  <input type="hidden" name="state" value="{{.State}}">
+  <input name="kind" value="{{.KindFilter}}" placeholder="filter by kind…">
+  <button type="submit">Filter</button>
+</form>
 <table>
-<tr><th>ID</th><th>Kind</th><th>When</th></tr>
+<tr><th>ID</th><th>Kind</th><th>Error</th><th>When</th></tr>
 {{range .Tasks}}
 <tr>
-<td><a href="/queues/{{$.Queue}}/tasks/{{.ID}}">{{.ID}}</a></td>
+<td><a href="/queues/{{$.Queue}}/tasks/{{.ID}}">{{.ID}}</a> {{if .ChainNext}}🔗{{else if gt .ChainIndex 0}}🔗{{end}}{{if .GroupID}}🧩{{end}}</td>
 <td>{{.Kind}}</td>
-<td>{{if not .NextProcessAt.IsZero}}{{.NextProcessAt.Format "2006-01-02 15:04:05"}}{{else}}—{{end}}</td>
+<td class="errcell">{{if .LastErr}}{{trunc .LastErr 60}}{{else}}—{{end}}</td>
+<td>{{if not .NextProcessAt.IsZero}}{{.NextProcessAt.Format "01-02 15:04:05"}}{{else}}—{{end}}</td>
 </tr>
 {{else}}
-<tr><td colspan="3">no tasks in this state</td></tr>
+<tr><td colspan="4">no tasks in this state</td></tr>
 {{end}}
 </table>
 {{end}}

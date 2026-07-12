@@ -286,6 +286,92 @@ func TestTaskDetail_MissingReturns404(t *testing.T) {
 	}
 }
 
+func mustGet(t *testing.T, url string) *http.Response {
+	t.Helper()
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("get %s: %v", url, err)
+	}
+	return resp
+}
+
+func TestTaskDetail_ChainStepper(t *testing.T) {
+	client := newTestRedis(t)
+	c := chronos.NewClient(client)
+	defer c.Close()
+	ctx := context.Background()
+	info, err := chronos.NewChain().
+		Then(demoArgs{Msg: "a"}, chronos.WithProcessIn(time.Hour)).
+		Then(demoArgs{Msg: "b"}).
+		Enqueue(ctx, c)
+	if err != nil {
+		t.Fatalf("chain: %v", err)
+	}
+	srv := httptest.NewServer(Handler(chronos.NewInspector(client)))
+	defer srv.Close()
+	resp := mustGet(t, srv.URL+"/queues/default/tasks/"+info.ID)
+	defer resp.Body.Close()
+	body := readBody(t, resp)
+	if !strings.Contains(body, `class="stepper"`) {
+		t.Errorf("missing stepper:\n%s", body)
+	}
+	if !strings.Contains(body, "step 1 of 2") {
+		t.Errorf("missing position label")
+	}
+	if !strings.Contains(body, "resumes the chain") {
+		t.Errorf("missing resume label on re-run button")
+	}
+}
+
+func TestTaskDetail_GroupGrid(t *testing.T) {
+	client := newTestRedis(t)
+	c := chronos.NewClient(client)
+	defer c.Close()
+	ctx := context.Background()
+	ginfo, err := chronos.NewGroup().
+		Add(demoArgs{Msg: "m0"}, chronos.WithProcessIn(time.Hour)).
+		Add(demoArgs{Msg: "m1"}, chronos.WithProcessIn(time.Hour)).
+		OnComplete(demoArgs{Msg: "cb"}).
+		Enqueue(ctx, c)
+	if err != nil {
+		t.Fatalf("group: %v", err)
+	}
+	srv := httptest.NewServer(Handler(chronos.NewInspector(client)))
+	defer srv.Close()
+	resp := mustGet(t, srv.URL+"/queues/default/tasks/"+ginfo.MemberIDs[0])
+	defer resp.Body.Close()
+	body := readBody(t, resp)
+	if !strings.Contains(body, `class="member-grid"`) {
+		t.Errorf("missing member grid:\n%s", body)
+	}
+	if !strings.Contains(body, "2 member(s) still pending") {
+		t.Errorf("missing pending count")
+	}
+}
+
+func TestQueueDetail_KindFilterAndIcons(t *testing.T) {
+	client := newTestRedis(t)
+	c := chronos.NewClient(client)
+	defer c.Close()
+	ctx := context.Background()
+	if _, err := chronos.NewChain().
+		Then(demoArgs{Msg: "x"}, chronos.WithProcessIn(time.Hour)).
+		Then(demoArgs{Msg: "y"}).
+		Enqueue(ctx, c); err != nil {
+		t.Fatalf("chain: %v", err)
+	}
+	srv := httptest.NewServer(Handler(chronos.NewInspector(client)))
+	defer srv.Close()
+	body := readBody(t, mustGet(t, srv.URL+"/queues/default?state=scheduled"))
+	if !strings.Contains(body, "🔗") {
+		t.Errorf("missing chain icon")
+	}
+	body = readBody(t, mustGet(t, srv.URL+"/queues/default?state=scheduled&kind=nope"))
+	if strings.Contains(body, "🔗") {
+		t.Errorf("kind filter did not exclude")
+	}
+}
+
 func TestRunTask_RejectsGet(t *testing.T) {
 	client := newTestRedis(t)
 	srv := httptest.NewServer(Handler(chronos.NewInspector(client)))
