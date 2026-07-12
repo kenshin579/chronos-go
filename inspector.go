@@ -188,25 +188,60 @@ type SchedulerStatus struct {
 	Schedules []ScheduleInfo
 }
 
-// ScheduleInfo is one schedule's fire history.
+// ScheduleInfo is one schedule's registry entry merged with its fire history.
 type ScheduleInfo struct {
 	ID        string
-	LastFired time.Time
+	Kind      string // "" for fire-history-only entries (pre-registry leftovers)
+	Queue     string
+	Spec      string    // "@every 30s" or a 5-field cron expression
+	LastFired time.Time // zero if the schedule never fired
+	LastSeen  time.Time // zero for fire-history-only entries
+	Stale     bool      // registry entry not refreshed within staleAfter
 }
 
-// SchedulerStatus returns the scheduler's leader and fired-schedule list.
+// staleAfter marks a registry entry stale when no scheduler has refreshed it
+// this long (running schedulers touch entries every LeaderTTL/2).
+const staleAfter = time.Minute
+
+// SchedulerStatus returns the scheduler's leader and every known schedule:
+// the registry (registered schedules, fired or not) merged by ID with the
+// fire-history keys (which may also hold pre-registry leftovers).
 func (i *Inspector) SchedulerStatus(ctx context.Context) (*SchedulerStatus, error) {
 	leader, err := i.rdb.LeaderID(ctx)
 	if err != nil {
 		return nil, err
 	}
-	raw, err := i.rdb.ScanSchedules(ctx)
+	registry, err := i.rdb.ListSchedules(ctx)
 	if err != nil {
 		return nil, err
 	}
-	st := &SchedulerStatus{LeaderID: leader, Schedules: make([]ScheduleInfo, 0, len(raw))}
-	for _, s := range raw {
-		st.Schedules = append(st.Schedules, ScheduleInfo{ID: s.ID, LastFired: time.Unix(s.LastFired, 0)})
+	fired, err := i.rdb.ScanSchedules(ctx)
+	if err != nil {
+		return nil, err
+	}
+	firedAt := make(map[string]int64, len(fired))
+	for _, f := range fired {
+		firedAt[f.ID] = f.LastFired
+	}
+
+	st := &SchedulerStatus{LeaderID: leader, Schedules: make([]ScheduleInfo, 0, len(registry)+len(fired))}
+	seen := make(map[string]bool, len(registry))
+	for _, m := range registry {
+		seen[m.ID] = true
+		info := ScheduleInfo{
+			ID: m.ID, Kind: m.Kind, Queue: m.Queue, Spec: m.Spec,
+			LastSeen: time.Unix(m.LastSeen, 0),
+			Stale:    time.Since(time.Unix(m.LastSeen, 0)) > staleAfter,
+		}
+		if ts, ok := firedAt[m.ID]; ok {
+			info.LastFired = time.Unix(ts, 0)
+		}
+		st.Schedules = append(st.Schedules, info)
+	}
+	for _, f := range fired { // history-only leftovers keep working
+		if !seen[f.ID] {
+			st.Schedules = append(st.Schedules, ScheduleInfo{ID: f.ID, LastFired: time.Unix(f.LastFired, 0)})
+		}
 	}
 	return st, nil
 }
