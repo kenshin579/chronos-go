@@ -358,16 +358,35 @@ func (s *Server) fetchLoop(ctx context.Context) {
 		}
 
 		// 디스패치: 첫 태스크는 이미 잡아둔 세마포어 슬롯을 쓰고, 나머지는
-		// 각각 슬롯을 새로 획득한 뒤 워커를 띄운다(백프레셔). 배치의 태스크는
-		// 이미 우리 PEL에 클레임되어 있으므로, 슬롯을 기다리다 ctx가 취소되면
-		// 남은 태스크는 PEL에 남는다 — 워커가 죽었을 때와 같은 경로로
-		// recoverer가 RecoverMinIdle 이후 재전달한다.
+		// 각각 슬롯을 새로 획득한 뒤 워커를 띄운다(백프레셔). 셧다운으로 슬롯을
+		// 얻지 못하면 배치의 남은 태스크를 스트림으로 되돌린다(Requeue) — PEL에
+		// 방치하면 recoverer가 Retried를 올리며 재전달해, 실행된 적 없는 태스크가
+		// 재시도 예산을 잃는다(MaxRetry=0이면 즉시 데드레터).
 		for i, dt := range tasks {
 			if i > 0 {
+				// Prefer taking a slot when one is free (batch was sized to the
+				// free slots, so this normally never blocks); fall through to
+				// the cancellation path only when we would actually block.
 				select {
 				case s.sem <- struct{}{}:
-				case <-ctx.Done():
-					return
+				default:
+					select {
+					case s.sem <- struct{}{}:
+					case <-ctx.Done():
+						// Shutdown mid-batch: return the claimed remainder to the
+						// stream so no task loses retry budget without running.
+						// Cancel-immune like the ack path — a stalled Redis must
+						// not hang Shutdown forever.
+						reqCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ackTimeout)
+						for _, rest := range tasks[i:] {
+							if rerr := s.rdb.Requeue(reqCtx, rest.Msg.Queue, rest.StreamID, rest.Msg); rerr != nil {
+								s.logger.Error("chronos: requeue on shutdown failed; recoverer will reclaim",
+									"id", rest.Msg.ID, "error", rerr)
+							}
+						}
+						cancel()
+						return
+					}
 				}
 			}
 			s.wg.Add(1)

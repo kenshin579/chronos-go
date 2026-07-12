@@ -121,6 +121,66 @@ func TestDequeueBatch_SkipsOrphans(t *testing.T) {
 	}
 }
 
+func TestDequeueBatch_SkipsCorruptEntry(t *testing.T) {
+	client := testutil.NewRedis(t)
+	r := NewRDB(client)
+	ctx := context.Background()
+
+	for _, id := range []string{"ok1", "bad", "ok2"} {
+		if err := r.Enqueue(ctx, &base.TaskMessage{ID: id, Kind: "k", Queue: "default"}); err != nil {
+			t.Fatalf("enqueue %s: %v", id, err)
+		}
+	}
+	// "bad"의 msg 필드를 손상시킨다.
+	if err := client.HSet(ctx, base.TaskKey("default", "bad"), "msg", "{not-json").Err(); err != nil {
+		t.Fatalf("corrupt: %v", err)
+	}
+	if err := r.EnsureGroup(ctx, "default"); err != nil {
+		t.Fatalf("group: %v", err)
+	}
+	got, err := r.DequeueBatch(ctx, "w1", -1, "default", 3)
+	if err != nil {
+		t.Fatalf("batch: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2 (corrupt skipped)", len(got))
+	}
+	for _, d := range got {
+		if d.Msg.ID == "bad" {
+			t.Error("corrupt task returned")
+		}
+	}
+}
+
+func TestRequeue_ReturnsClaimedTaskToStream(t *testing.T) {
+	client := testutil.NewRedis(t)
+	r := NewRDB(client)
+	ctx := context.Background()
+
+	msg := &base.TaskMessage{ID: "rq1", Kind: "k", Queue: "default"}
+	if err := r.Enqueue(ctx, msg); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if err := r.EnsureGroup(ctx, "default"); err != nil {
+		t.Fatalf("group: %v", err)
+	}
+	got, sid, err := r.Dequeue(ctx, "w1", -1, "default")
+	if err != nil {
+		t.Fatalf("dequeue: %v", err)
+	}
+	if err := r.Requeue(ctx, "default", sid, got); err != nil {
+		t.Fatalf("requeue: %v", err)
+	}
+	// PEL은 비고(XACK), 태스크는 다시 fetch 가능해야 하며 Retried는 그대로.
+	again, _, err := r.Dequeue(ctx, "w2", -1, "default")
+	if err != nil {
+		t.Fatalf("re-dequeue: %v", err)
+	}
+	if again.ID != "rq1" || again.Retried != 0 {
+		t.Errorf("requeued task = %+v, want rq1 with Retried 0", again)
+	}
+}
+
 func TestDequeueBatch_EmptyReturnsErrNoTask(t *testing.T) {
 	client := testutil.NewRedis(t)
 	r := NewRDB(client)

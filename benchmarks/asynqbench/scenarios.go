@@ -47,10 +47,7 @@ func (enqueueScenario) Run(ctx context.Context, cfg bench.Config) (bench.Result,
 	client := asynq.NewClient(opt(cfg))
 	defer client.Close()
 
-	body, err := json.Marshal(benchPayload{Pad: pad(cfg.PayloadSize)})
-	if err != nil {
-		return bench.Result{}, err
-	}
+	padding := pad(cfg.PayloadSize)
 	per := cfg.Tasks / cfg.Producers
 	var wg sync.WaitGroup
 	var firstErr atomic.Value
@@ -60,6 +57,13 @@ func (enqueueScenario) Run(ctx context.Context, cfg bench.Config) (bench.Result,
 		go func() {
 			defer wg.Done()
 			for i := 0; i < per; i++ {
+				// Marshal per task (not hoisted) — chronos pays per-call
+				// marshalling in its enqueue scenario, so asynq must too.
+				body, err := json.Marshal(benchPayload{Pad: padding})
+				if err != nil {
+					firstErr.CompareAndSwap(nil, err)
+					return
+				}
 				if _, err := client.EnqueueContext(ctx, asynq.NewTask("bench:task", body)); err != nil {
 					firstErr.CompareAndSwap(nil, err)
 					return

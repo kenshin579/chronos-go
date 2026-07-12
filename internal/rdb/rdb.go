@@ -35,6 +35,9 @@ func NewRDB(client redis.UniversalClient) *RDB {
 
 // registerQueue adds qname to the global queue index, skipping the round trip
 // when this instance has already done so. See knownQueues.
+// If the index key is lost (FLUSHDB), a long-lived process re-registers only
+// after restart; this affects Inspector queue listing only, never task
+// processing.
 func (r *RDB) registerQueue(ctx context.Context, qname string) error {
 	if _, ok := r.knownQueues.Load(qname); ok {
 		return nil
@@ -138,6 +141,9 @@ type Dequeued struct {
 // consumer's PEL (already delivered via ">", so unrecoverable in M1). Callers
 // scan queues one at a time to honor priority.
 func (r *RDB) DequeueBatch(ctx context.Context, consumer string, block time.Duration, qname string, count int) ([]Dequeued, error) {
+	if count < 1 {
+		count = 1 // go-redis omits COUNT when 0, which would read unbounded
+	}
 	streamKey := base.StreamKey(qname)
 
 	// go-redis maps XReadGroupArgs.Block >= 0 to a Redis "BLOCK <ms>" option,
@@ -195,7 +201,11 @@ func (r *RDB) DequeueBatch(ctx context.Context, consumer string, block time.Dura
 		}
 		msg, err := base.DecodeMessage([]byte(raw))
 		if err != nil {
-			return nil, err
+			// Corrupt body: skip this entry, keep the rest of the batch. The
+			// entry stays claimed in our PEL; the recoverer reclaims and
+			// eventually archives it — same as the recover path's handling of
+			// undecodable tasks. One bad entry must not poison the whole batch.
+			continue
 		}
 		msg.State = base.StateActive
 		tasks = append(tasks, Dequeued{Msg: msg, StreamID: entries[i].ID})
@@ -222,6 +232,29 @@ func (r *RDB) DequeueBatch(ctx context.Context, consumer string, block time.Dura
 	}
 
 	return tasks, nil
+}
+
+// requeueCmd returns a claimed-but-undispatched entry to the stream: ack+delete
+// the old entry and append a fresh one, resetting the task to pending. Used
+// when a shutdown interrupts a fetched batch — without this the entries would
+// sit in the PEL until the recoverer reclaims them, consuming retry budget for
+// tasks that never ran. Keys share the queue hash tag (cluster-safe).
+// KEYS[1] stream, KEYS[2] task hash. ARGV[1] group, ARGV[2] old streamID, ARGV[3] task id, ARGV[4] pending state.
+var requeueCmd = redis.NewScript(`
+redis.call("XACK", KEYS[1], ARGV[1], ARGV[2])
+redis.call("XDEL", KEYS[1], ARGV[2])
+if redis.call("EXISTS", KEYS[2]) == 1 then
+  redis.call("HSET", KEYS[2], "state", ARGV[4])
+  redis.call("XADD", KEYS[1], "*", "task_id", ARGV[3])
+end
+return 1
+`)
+
+// Requeue returns a claimed, not-yet-dispatched task to the back of its queue.
+func (r *RDB) Requeue(ctx context.Context, qname, streamID string, msg *base.TaskMessage) error {
+	keys := []string{base.StreamKey(qname), base.TaskKey(qname, msg.ID)}
+	argv := []interface{}{ConsumerGroup, streamID, msg.ID, int(base.StatePending)}
+	return requeueCmd.Run(ctx, r.client, keys, argv...).Err()
 }
 
 // releaseUniqueCmd deletes the unique lock only if it still points at this task
