@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -19,11 +20,33 @@ const ConsumerGroup = "chronos"
 // RDB wraps a Redis client with chronos-go's task operations.
 type RDB struct {
 	client redis.UniversalClient
+
+	// knownQueues caches queue names this instance has already registered in
+	// the global queue index (SADD chronos:queues), so the hot enqueue path
+	// pays that extra round trip only once per queue per process. Registration
+	// is idempotent, so a lost cache (new process) just re-registers.
+	knownQueues sync.Map // queue name -> struct{}
 }
 
 // NewRDB returns an RDB backed by the given Redis client.
 func NewRDB(client redis.UniversalClient) *RDB {
 	return &RDB{client: client}
+}
+
+// registerQueue adds qname to the global queue index, skipping the round trip
+// when this instance has already done so. See knownQueues.
+// If the index key is lost (FLUSHDB), a long-lived process re-registers only
+// after restart; this affects Inspector queue listing only, never task
+// processing.
+func (r *RDB) registerQueue(ctx context.Context, qname string) error {
+	if _, ok := r.knownQueues.Load(qname); ok {
+		return nil
+	}
+	if err := r.client.SAdd(ctx, base.QueuesKey(), qname).Err(); err != nil {
+		return err
+	}
+	r.knownQueues.Store(qname, struct{}{})
+	return nil
 }
 
 // Client exposes the underlying Redis client (used by higher layers for
@@ -54,9 +77,10 @@ func (r *RDB) Enqueue(ctx context.Context, msg *base.TaskMessage) error {
 		return err
 	}
 
-	// Register the queue name in the global index. Separate from the atomic
-	// script because QueuesKey has no hash tag (different cluster slot).
-	if err := r.client.SAdd(ctx, base.QueuesKey(), msg.Queue).Err(); err != nil {
+	// Register the queue name in the global index (cached — one round trip per
+	// queue per process). Separate from the atomic script because QueuesKey has
+	// no hash tag (different cluster slot).
+	if err := r.registerQueue(ctx, msg.Queue); err != nil {
 		return err
 	}
 
@@ -92,13 +116,34 @@ func (r *RDB) EnsureGroup(ctx context.Context, qname string) error {
 // is the max duration to wait for a task (0 means return immediately). It
 // returns ErrNoTask when nothing is available. The task's state is set to
 // active. streamID identifies the stream entry for later acking.
+func (r *RDB) Dequeue(ctx context.Context, consumer string, block time.Duration, qname string) (*base.TaskMessage, string, error) {
+	tasks, err := r.DequeueBatch(ctx, consumer, block, qname, 1)
+	if err != nil {
+		return nil, "", err
+	}
+	return tasks[0].Msg, tasks[0].StreamID, nil
+}
+
+// Dequeued is one task claimed from a stream by DequeueBatch.
+type Dequeued struct {
+	Msg      *base.TaskMessage
+	StreamID string
+}
+
+// DequeueBatch reads up to count tasks from the queue in one XREADGROUP call,
+// then loads bodies and marks them active with two pipelines — 3 round trips
+// per batch instead of 3 per task. Orphan entries (body already deleted) are
+// acked+deleted and skipped. Returns ErrNoTask when nothing was available.
 //
-// Dequeue reads a single stream so that a message delivered by XREADGROUP is
-// never dropped: with multiple STREAMS Redis may return entries for several
-// streams in one call, but reading only the first would leave the rest in the
+// It reads a single stream so that a message delivered by XREADGROUP is never
+// dropped: with multiple STREAMS Redis may return entries for several streams
+// in one call, but reading only the first would leave the rest in the
 // consumer's PEL (already delivered via ">", so unrecoverable in M1). Callers
 // scan queues one at a time to honor priority.
-func (r *RDB) Dequeue(ctx context.Context, consumer string, block time.Duration, qname string) (*base.TaskMessage, string, error) {
+func (r *RDB) DequeueBatch(ctx context.Context, consumer string, block time.Duration, qname string, count int) ([]Dequeued, error) {
+	if count < 1 {
+		count = 1 // go-redis omits COUNT when 0, which would read unbounded
+	}
 	streamKey := base.StreamKey(qname)
 
 	// go-redis maps XReadGroupArgs.Block >= 0 to a Redis "BLOCK <ms>" option,
@@ -115,45 +160,101 @@ func (r *RDB) Dequeue(ctx context.Context, consumer string, block time.Duration,
 		Group:    ConsumerGroup,
 		Consumer: consumer,
 		Streams:  []string{streamKey, ">"},
-		Count:    1,
+		Count:    int64(count),
 		Block:    blockArg,
 	}).Result()
 	if err == redis.Nil {
-		return nil, "", ErrNoTask
+		return nil, ErrNoTask
 	}
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	if len(res) == 0 || len(res[0].Messages) == 0 {
-		return nil, "", ErrNoTask
+		return nil, ErrNoTask
+	}
+	entries := res[0].Messages
+
+	// Pipeline 1: load every task body in one round trip.
+	taskIDs := make([]string, len(entries))
+	getPipe := r.client.Pipeline()
+	getCmds := make([]*redis.StringCmd, len(entries))
+	for i, entry := range entries {
+		taskIDs[i], _ = entry.Values["task_id"].(string)
+		getCmds[i] = getPipe.HGet(ctx, base.TaskKey(qname, taskIDs[i]), "msg")
+	}
+	// Exec returns the first command error; a redis.Nil there just means some
+	// HGet hit an orphan — inspect each command individually below.
+	if _, err := getPipe.Exec(ctx); err != nil && err != redis.Nil {
+		return nil, err
 	}
 
-	entry := res[0].Messages[0]
-	taskID, _ := entry.Values["task_id"].(string)
+	tasks := make([]Dequeued, 0, len(entries))
+	var orphans []string // stream entry IDs whose body is already gone
+	for i, cmd := range getCmds {
+		raw, err := cmd.Result()
+		if err == redis.Nil {
+			orphans = append(orphans, entries[i].ID)
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		msg, err := base.DecodeMessage([]byte(raw))
+		if err != nil {
+			// Corrupt body: skip this entry, keep the rest of the batch. The
+			// entry stays claimed in our PEL; the recoverer reclaims and
+			// eventually archives it — same as the recover path's handling of
+			// undecodable tasks. One bad entry must not poison the whole batch.
+			continue
+		}
+		msg.State = base.StateActive
+		tasks = append(tasks, Dequeued{Msg: msg, StreamID: entries[i].ID})
+	}
 
-	raw, err := r.client.HGet(ctx, base.TaskKey(qname, taskID), "msg").Result()
-	if err == redis.Nil {
-		// Orphan stream entry (body already gone): ack, delete it, report no task.
+	// Orphan stream entries (body already gone): ack, delete, skip.
+	if len(orphans) > 0 {
 		pipe := r.client.TxPipeline()
-		pipe.XAck(ctx, streamKey, ConsumerGroup, entry.ID)
-		pipe.XDel(ctx, streamKey, entry.ID)
+		pipe.XAck(ctx, streamKey, ConsumerGroup, orphans...)
+		pipe.XDel(ctx, streamKey, orphans...)
 		_, _ = pipe.Exec(ctx)
-		return nil, "", ErrNoTask
 	}
-	if err != nil {
-		return nil, "", err
-	}
-
-	msg, err := base.DecodeMessage([]byte(raw))
-	if err != nil {
-		return nil, "", err
-	}
-	msg.State = base.StateActive
-	if err := r.client.HSet(ctx, base.TaskKey(qname, taskID), "state", int(base.StateActive)).Err(); err != nil {
-		return nil, "", err
+	if len(tasks) == 0 {
+		return nil, ErrNoTask
 	}
 
-	return msg, entry.ID, nil
+	// Pipeline 2: mark every surviving task active in one round trip.
+	setPipe := r.client.Pipeline()
+	for _, d := range tasks {
+		setPipe.HSet(ctx, base.TaskKey(qname, d.Msg.ID), "state", int(base.StateActive))
+	}
+	if _, err := setPipe.Exec(ctx); err != nil {
+		return nil, err
+	}
+
+	return tasks, nil
+}
+
+// requeueCmd returns a claimed-but-undispatched entry to the stream: ack+delete
+// the old entry and append a fresh one, resetting the task to pending. Used
+// when a shutdown interrupts a fetched batch — without this the entries would
+// sit in the PEL until the recoverer reclaims them, consuming retry budget for
+// tasks that never ran. Keys share the queue hash tag (cluster-safe).
+// KEYS[1] stream, KEYS[2] task hash. ARGV[1] group, ARGV[2] old streamID, ARGV[3] task id, ARGV[4] pending state.
+var requeueCmd = redis.NewScript(`
+redis.call("XACK", KEYS[1], ARGV[1], ARGV[2])
+redis.call("XDEL", KEYS[1], ARGV[2])
+if redis.call("EXISTS", KEYS[2]) == 1 then
+  redis.call("HSET", KEYS[2], "state", ARGV[4])
+  redis.call("XADD", KEYS[1], "*", "task_id", ARGV[3])
+end
+return 1
+`)
+
+// Requeue returns a claimed, not-yet-dispatched task to the back of its queue.
+func (r *RDB) Requeue(ctx context.Context, qname, streamID string, msg *base.TaskMessage) error {
+	keys := []string{base.StreamKey(qname), base.TaskKey(qname, msg.ID)}
+	argv := []interface{}{ConsumerGroup, streamID, msg.ID, int(base.StatePending)}
+	return requeueCmd.Run(ctx, r.client, keys, argv...).Err()
 }
 
 // releaseUniqueCmd deletes the unique lock only if it still points at this task

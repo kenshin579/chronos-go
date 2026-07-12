@@ -23,6 +23,7 @@ package chronos
 //  [x] Done retention (moveToZSetCmd) + TrimCompleted       → TestCluster_CompletedRetention
 //  [x] chainEnqueueCmd/chainScheduleCmd (chain successor)   → TestCluster_ChainCompletes
 //  [x] CreateGroup + groupCompleteCmd (group fan-out)       → TestCluster_GroupFanOut
+//  [x] requeueCmd (shutdown batch return)                   → TestCluster_RequeueReturnsTask
 
 import (
 	"context"
@@ -629,4 +630,34 @@ func TestCluster_GroupFanOut(t *testing.T) {
 	waitFor(t, 10*time.Second, "3 members then callback", func() bool {
 		return members.Load() == 3 && callbacks.Load() == 1
 	})
+}
+
+func TestCluster_RequeueReturnsTask(t *testing.T) {
+	client := testutil.NewClusterRedis(t)
+	c := NewClient(client)
+	defer c.Close()
+	ctx := context.Background()
+	r := rdb.NewRDB(client)
+
+	info, err := Enqueue(ctx, c, clArgs{N: 41}, WithQueue("alpha"))
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if err := r.EnsureGroup(ctx, "alpha"); err != nil {
+		t.Fatalf("group: %v", err)
+	}
+	msg, sid, err := r.Dequeue(ctx, "w", -1, "alpha")
+	if err != nil {
+		t.Fatalf("dequeue: %v", err)
+	}
+	if msg.ID != info.ID {
+		t.Fatalf("got %s", msg.ID)
+	}
+	if err := r.Requeue(ctx, "alpha", sid, msg); err != nil {
+		t.Fatalf("requeue: %v", err)
+	}
+	again, _, err := r.Dequeue(ctx, "w2", -1, "alpha")
+	if err != nil || again.ID != info.ID {
+		t.Fatalf("re-dequeue: %v %v", again, err)
+	}
 }

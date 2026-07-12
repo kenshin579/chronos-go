@@ -20,6 +20,10 @@ import (
 // so Shutdown stays responsive.
 const pollBlock = 1 * time.Second
 
+// maxFetchBatch caps how many tasks one DequeueBatch claims, keeping a single
+// XREADGROUP (and the follow-up pipelines) short even at high Concurrency.
+const maxFetchBatch = 128
+
 // forwardBatchSize and recoverBatchSize bound how many tasks each maintenance
 // tick moves, keeping individual Redis calls short.
 const (
@@ -287,15 +291,23 @@ func (s *Server) fetchLoop(ctx context.Context) {
 			}
 		}
 
-		var (
-			msg      *base.TaskMessage
-			streamID string
-			found    bool
-		)
+		// 배치 크기: 지금 놀고 있는 워커 수만큼 한 번에 가져온다(우리가 잡은
+		// 슬롯 1 + 남은 빈 슬롯). 근사치라도 안전하다 — 초과분은 아래 디스패치
+		// 단계에서 세마포어 획득으로 백프레셔가 걸린다.
+		batch := 1 + (cap(s.sem) - len(s.sem))
+		if batch < 1 {
+			batch = 1
+		}
+		if batch > maxFetchBatch {
+			batch = maxFetchBatch
+		}
 
-		// 1) 우선순위 순서대로 논블로킹 조회.
+		var tasks []rdb.Dequeued
+
+		// 1) 우선순위 순서대로 논블로킹 조회. 배치는 한 라운드에 한 큐에서만
+		// 가져온다(우선순위 의미 단순 유지).
 		for _, q := range order {
-			m, sid, err := s.rdb.Dequeue(ctx, s.consumer, -1, q)
+			ts, err := s.rdb.DequeueBatch(ctx, s.consumer, -1, q, batch)
 			if err == rdb.ErrNoTask {
 				continue
 			}
@@ -307,13 +319,13 @@ func (s *Server) fetchLoop(ctx context.Context) {
 				s.logger.Error("chronos: dequeue failed", "queue", q, "error", err)
 				continue
 			}
-			msg, streamID, found = m, sid, true
+			tasks = ts
 			break
 		}
 
 		// 2) 모두 비었으면 이번 라운드의 첫 큐에 블로킹(응답성 유지). weighted에선
 		// SWRR가 라운드마다 다른 큐를 뽑으므로 블로킹 감시도 가중치대로 분배된다.
-		if !found {
+		if len(tasks) == 0 {
 			// order[0] should never be empty (Start rejects an empty Queues, so
 			// the picker and byWeight are non-empty), but guard so a stray ""
 			// can't turn into a busy-loop blocking on a nonexistent stream.
@@ -322,7 +334,7 @@ func (s *Server) fetchLoop(ctx context.Context) {
 				return
 			}
 			q := order[0]
-			m, sid, err := s.rdb.Dequeue(ctx, s.consumer, pollBlock, q)
+			ts, err := s.rdb.DequeueBatch(ctx, s.consumer, pollBlock, q, batch)
 			if err == rdb.ErrNoTask {
 				<-s.sem
 				continue
@@ -337,22 +349,55 @@ func (s *Server) fetchLoop(ctx context.Context) {
 				time.Sleep(100 * time.Millisecond)
 				continue
 			}
-			msg, streamID, found = m, sid, true
+			tasks = ts
 		}
 
-		if !found {
+		if len(tasks) == 0 {
 			<-s.sem
 			continue
 		}
 
-		s.wg.Add(1)
-		go func(qname, sid string, m *base.TaskMessage) {
-			defer s.wg.Done()
-			defer func() { <-s.sem }()
-			s.trackInflight(m.ID, inflightEntry{streamID: sid, queue: qname, uniqueKey: m.UniqueKey})
-			defer s.untrackInflight(m.ID)
-			s.process(ctx, qname, sid, m)
-		}(msg.Queue, streamID, msg)
+		// 디스패치: 첫 태스크는 이미 잡아둔 세마포어 슬롯을 쓰고, 나머지는
+		// 각각 슬롯을 새로 획득한 뒤 워커를 띄운다(백프레셔). 셧다운으로 슬롯을
+		// 얻지 못하면 배치의 남은 태스크를 스트림으로 되돌린다(Requeue) — PEL에
+		// 방치하면 recoverer가 Retried를 올리며 재전달해, 실행된 적 없는 태스크가
+		// 재시도 예산을 잃는다(MaxRetry=0이면 즉시 데드레터).
+		for i, dt := range tasks {
+			if i > 0 {
+				// Prefer taking a slot when one is free (batch was sized to the
+				// free slots, so this normally never blocks); fall through to
+				// the cancellation path only when we would actually block.
+				select {
+				case s.sem <- struct{}{}:
+				default:
+					select {
+					case s.sem <- struct{}{}:
+					case <-ctx.Done():
+						// Shutdown mid-batch: return the claimed remainder to the
+						// stream so no task loses retry budget without running.
+						// Cancel-immune like the ack path — a stalled Redis must
+						// not hang Shutdown forever.
+						reqCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ackTimeout)
+						for _, rest := range tasks[i:] {
+							if rerr := s.rdb.Requeue(reqCtx, rest.Msg.Queue, rest.StreamID, rest.Msg); rerr != nil {
+								s.logger.Error("chronos: requeue on shutdown failed; recoverer will reclaim",
+									"id", rest.Msg.ID, "error", rerr)
+							}
+						}
+						cancel()
+						return
+					}
+				}
+			}
+			s.wg.Add(1)
+			go func(qname, sid string, m *base.TaskMessage) {
+				defer s.wg.Done()
+				defer func() { <-s.sem }()
+				s.trackInflight(m.ID, inflightEntry{streamID: sid, queue: qname, uniqueKey: m.UniqueKey})
+				defer s.untrackInflight(m.ID)
+				s.process(ctx, qname, sid, m)
+			}(dt.Msg.Queue, dt.StreamID, dt.Msg)
+		}
 	}
 }
 

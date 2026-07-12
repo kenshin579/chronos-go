@@ -46,8 +46,8 @@ return 1
 // — then it is a no-op and returns false. See chainEnqueueCmd for why.
 func (r *RDB) EnqueueChainLink(ctx context.Context, msg *base.TaskMessage, delay time.Duration) (bool, error) {
 	// Register the queue in the global index (same as other enqueue paths;
-	// separate command because QueuesKey has no hash tag).
-	if err := r.client.SAdd(ctx, base.QueuesKey(), msg.Queue).Err(); err != nil {
+	// cached, separate command because QueuesKey has no hash tag).
+	if err := r.registerQueue(ctx, msg.Queue); err != nil {
 		return false, err
 	}
 

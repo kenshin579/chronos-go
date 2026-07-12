@@ -23,6 +23,14 @@ func (prioArgs) Kind() string { return "test:prio" }
 // queue names in processing order.
 func runPriorityServer(t *testing.T, queues map[string]int, strict bool, counts map[string]int) []string {
 	t.Helper()
+	return runPriorityServerN(t, queues, strict, counts, 1)
+}
+
+// runPriorityServerN is runPriorityServer with a configurable concurrency —
+// concurrency > 1 exercises the batch fetch path, where processing order only
+// approximates dequeue order.
+func runPriorityServerN(t *testing.T, queues map[string]int, strict bool, counts map[string]int, concurrency int) []string {
+	t.Helper()
 	client := testutil.NewRedis(t)
 	c := NewClient(client)
 	defer c.Close()
@@ -57,7 +65,7 @@ func runPriorityServer(t *testing.T, queues map[string]int, strict bool, counts 
 	srv := NewServer(client, ServerConfig{
 		Queues:         queues,
 		StrictPriority: strict,
-		Concurrency:    1, // sequential: processing order mirrors dequeue order
+		Concurrency:    concurrency,
 	})
 	if err := srv.Start(ctx, mux); err != nil {
 		t.Fatalf("start: %v", err)
@@ -101,6 +109,23 @@ func TestServer_WeightedPriorityDistribution(t *testing.T) {
 	}
 	if got := countQueue(head, "low"); got < 2 {
 		t.Errorf("low starved: %d in first 16, want >= 2 (order=%v)", got, head)
+	}
+}
+
+func TestServer_WeightedPriorityDistribution_Batched(t *testing.T) {
+	// Concurrency 8 → 배치 fetch 경로. 가중치 3:1이 배치 단위로도 대체로
+	// 유지되는지(정확 비율이 아닌 관대한 범위) + 기아 없음을 확인한다.
+	order := runPriorityServerN(t,
+		map[string]int{"critical": 3, "low": 1}, false,
+		map[string]int{"critical": 60, "low": 60}, 8)
+
+	head := order[:40]
+	crit := countQueue(head, "critical")
+	if crit < 20 || crit > 38 {
+		t.Errorf("critical in first 40 = %d, want in [20,38] (batched weighting)", crit)
+	}
+	if countQueue(head, "low") < 2 {
+		t.Errorf("low starved in first 40")
 	}
 }
 
