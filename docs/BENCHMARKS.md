@@ -31,7 +31,7 @@ Pure client-side enqueue, 4 producers, no server.
 | library | tasks/s |
 |---|---|
 | chronos-go | 25,872 |
-| asynq | 27,710 |
+| asynq | 27,133 |
 
 ## End-to-end throughput (produce + consume)
 
