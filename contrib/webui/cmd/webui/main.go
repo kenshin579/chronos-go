@@ -1,6 +1,7 @@
 // Command webui runs the chronos-go task-management console.
 //
-//	go run ./cmd/webui --db 15
+//	go run ./cmd/webui --db 15                                   # standalone (default)
+//	go run ./cmd/webui --cluster --redis n1:7000,n2:7001         # Redis Cluster
 //
 // It binds 127.0.0.1:8080 by default and opens your browser. To expose it
 // remotely, set --addr 0.0.0.0:8080 and put it behind an authenticating
@@ -10,7 +11,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -18,6 +21,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -29,22 +33,31 @@ import (
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8080", "HTTP listen address")
-	redisAddr := flag.String("redis", "127.0.0.1:6379", "Redis address")
-	db := flag.Int("db", 0, "Redis logical database")
+	standalone := flag.Bool("standalone", false, "connect to a standalone Redis (default)")
+	cluster := flag.Bool("cluster", false, "connect to a Redis Cluster (--redis takes comma-separated seed nodes)")
+	redisAddr := flag.String("redis", "127.0.0.1:6379", "Redis address (comma-separated for --cluster)")
+	db := flag.Int("db", 0, "Redis logical database (standalone only; cluster has only DB 0)")
 	noOpen := flag.Bool("no-open", false, "do not open a browser on start")
 	flag.Parse()
 
-	rdb := redis.NewClient(&redis.Options{Addr: *redisAddr, DB: *db})
+	rdb, err := buildClient(*standalone, *cluster, *redisAddr, *db)
+	if err != nil {
+		log.Fatalf("webui: %v", err)
+	}
 	if err := rdb.Ping(context.Background()).Err(); err != nil {
-		log.Fatalf("cannot reach Redis at %s (db %d): %v", *redisAddr, *db, err)
+		log.Fatalf("cannot reach Redis at %s: %v", *redisAddr, err)
 	}
 	defer rdb.Close()
 
-	srv := &http.Server{Addr: *addr, Handler: webui.Handler(chronos.NewInspector(rdb))}
+	conn := fmt.Sprintf("standalone %s db%d", *redisAddr, *db)
+	if *cluster {
+		conn = fmt.Sprintf("cluster (%d seed)", len(splitAddrs(*redisAddr)))
+	}
+	srv := &http.Server{Addr: *addr, Handler: webui.Handler(chronos.NewInspector(rdb), webui.WithConnInfo(conn))}
 
-	ln, err := net.Listen("tcp", *addr)
-	if err != nil {
-		log.Fatalf("cannot listen on %s: %v", *addr, err)
+	ln, lerr := net.Listen("tcp", *addr)
+	if lerr != nil {
+		log.Fatalf("cannot listen on %s: %v", *addr, lerr)
 	}
 
 	go func() {
@@ -65,6 +78,39 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)
+}
+
+// buildClient creates the Redis client for the chosen mode. Mirrors
+// cmd/chronos's buildClient — the two commands live in different Go modules,
+// so the few lines are duplicated rather than shared.
+func buildClient(standalone, cluster bool, addr string, db int) (redis.UniversalClient, error) {
+	if standalone && cluster {
+		return nil, errors.New("--standalone and --cluster are mutually exclusive")
+	}
+	if cluster {
+		if db != 0 {
+			return nil, errors.New("--db is not supported with --cluster: Redis Cluster has only database 0")
+		}
+		addrs := splitAddrs(addr)
+		if len(addrs) == 0 {
+			return nil, errors.New("--cluster requires at least one seed address in --redis")
+		}
+		return redis.NewClusterClient(&redis.ClusterOptions{Addrs: addrs}), nil
+	}
+	return redis.NewClient(&redis.Options{Addr: addr, DB: db}), nil
+}
+
+// splitAddrs splits a comma-separated address list, trimming whitespace and
+// dropping empty entries.
+func splitAddrs(s string) []string {
+	parts := strings.Split(s, ",")
+	addrs := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			addrs = append(addrs, p)
+		}
+	}
+	return addrs
 }
 
 // openBrowser best-effort opens url in the default browser; failures are logged.

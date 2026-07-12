@@ -505,3 +505,27 @@ func TestSchedulerPage(t *testing.T) {
 		t.Errorf("scheduler page missing data:\n%s", body)
 	}
 }
+
+// TestClusterSmoke_Dashboard verifies the console works against a real Redis
+// Cluster (opt-in via REDIS_CLUSTER_ADDRS, like the core's cluster suite).
+func TestClusterSmoke_Dashboard(t *testing.T) {
+	addrs := os.Getenv("REDIS_CLUSTER_ADDRS")
+	if addrs == "" {
+		t.Skip("REDIS_CLUSTER_ADDRS not set")
+	}
+	cc := redis.NewClusterClient(&redis.ClusterOptions{Addrs: strings.Split(addrs, ",")})
+	defer cc.Close()
+	if err := cc.Ping(context.Background()).Err(); err != nil {
+		t.Fatalf("cluster set but unreachable: %v", err)
+	}
+	srv := httptest.NewServer(Handler(chronos.NewInspector(cc), WithConnInfo("cluster (test)")))
+	defer srv.Close()
+	resp := mustGet(t, srv.URL+"/")
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if body := readBody(t, resp); !strings.Contains(body, "cluster (test)") {
+		t.Errorf("conn label missing")
+	}
+}

@@ -55,7 +55,7 @@ func (s *server) dashboard(w http.ResponseWriter, r *http.Request) {
 		Sparks map[string]template.HTML
 		Msg    string
 	}{
-		pageData: pageData{Title: "queues"},
+		pageData: pageData{Title: "queues", Conn: s.conn},
 		Queues:   queues,
 		Sched:    sched,
 		Sparks:   sparks,
@@ -136,7 +136,7 @@ func (s *server) queueDetail(w http.ResponseWriter, r *http.Request) {
 		Msg        string
 		KindFilter string
 	}{
-		pageData:   pageData{Title: queue},
+		pageData:   pageData{Title: queue, Conn: s.conn},
 		Queue:      queue,
 		State:      state,
 		States:     listStates,
@@ -169,7 +169,7 @@ func (s *server) taskDetail(w http.ResponseWriter, r *http.Request) {
 		Payload      string
 		GroupMembers []string
 	}{
-		pageData:     pageData{Title: id},
+		pageData:     pageData{Title: id, Conn: s.conn},
 		Task:         task,
 		Payload:      formatPayload(task.Payload),
 		GroupMembers: members,
@@ -293,5 +293,5 @@ func (s *server) schedulerPage(w http.ResponseWriter, r *http.Request) {
 	render(w, "scheduler", struct {
 		pageData
 		Sched *chronos.SchedulerStatus
-	}{pageData{Title: "scheduler"}, st})
+	}{pageData{Title: "scheduler", Conn: s.conn}, st})
 }
