@@ -372,6 +372,20 @@ func (s *Server) process(ctx context.Context, qname, streamID string, msg *base.
 	defer cancel()
 
 	if err == nil {
+		// A chained task must enqueue its successor BEFORE acking: if we acked
+		// first and crashed, the chain would be lost. The reverse order is safe
+		// because successor creation is idempotent (deterministic ID +
+		// create-if-absent), so a redelivery cannot duplicate it.
+		if len(msg.Chain) > 0 {
+			if cerr := s.enqueueNext(opCtx, msg); cerr != nil {
+				// Leave the task unacked: the recoverer will redeliver it, the
+				// (idempotent) handler runs again, and the successor enqueue is
+				// retried. Better a re-run than a silently broken chain.
+				s.logger.Error("chronos: chain successor enqueue failed; leaving task for redelivery",
+					"id", msg.ID, "error", cerr)
+				return
+			}
+		}
 		if derr := s.rdb.Done(opCtx, qname, streamID, msg); derr != nil {
 			s.logger.Error("chronos: ack failed", "id", msg.ID, "error", derr)
 		}
@@ -397,6 +411,33 @@ func (s *Server) process(ctx context.Context, qname, streamID string, msg *base.
 		s.logger.Error("chronos: retry scheduling failed", "id", msg.ID, "error", rerr)
 	}
 	s.observe(msg, OutcomeRetry, dur)
+}
+
+// enqueueNext makes msg's first pending chain link available, carrying the rest
+// of the tail. Idempotent: the successor's deterministic ID plus the
+// create-if-absent script mean a redelivered predecessor cannot duplicate it.
+func (s *Server) enqueueNext(ctx context.Context, msg *base.TaskMessage) error {
+	link := msg.Chain[0]
+	next := &base.TaskMessage{
+		ID:         fmt.Sprintf("%s:%d", msg.ChainID, msg.ChainIndex+1),
+		Kind:       link.Kind,
+		Payload:    link.Payload,
+		Queue:      link.Queue,
+		MaxRetry:   link.MaxRetry,
+		NoArchive:  link.NoArchive,
+		Retention:  link.Retention,
+		Chain:      msg.Chain[1:],
+		ChainID:    msg.ChainID,
+		ChainIndex: msg.ChainIndex + 1,
+	}
+	enqueued, err := s.rdb.EnqueueChainLink(ctx, next, time.Duration(link.Delay)*time.Second)
+	if err != nil {
+		return err
+	}
+	if !enqueued {
+		s.logger.Debug("chronos: chain successor already exists (redelivery)", "id", next.ID)
+	}
+	return nil
 }
 
 func (s *Server) trackInflight(id string, e inflightEntry) {
