@@ -22,6 +22,7 @@ package chronos
 //  [x] two queues on different slots (MOVED redirects)      → TestCluster_TwoQueuesDifferentSlots
 //  [x] Done retention (moveToZSetCmd) + TrimCompleted       → TestCluster_CompletedRetention
 //  [x] chainEnqueueCmd/chainScheduleCmd (chain successor)   → TestCluster_ChainCompletes
+//  [x] CreateGroup + groupCompleteCmd (group fan-out)       → TestCluster_GroupFanOut
 
 import (
 	"context"
@@ -586,5 +587,46 @@ func TestCluster_ChainCompletes(t *testing.T) {
 	}
 	waitFor(t, 10*time.Second, "3-link chain completes across slots", func() bool {
 		return done.Load() == 3
+	})
+}
+
+func TestCluster_GroupFanOut(t *testing.T) {
+	client := testutil.NewClusterRedis(t)
+	c := NewClient(client)
+	defer c.Close()
+	ctx := context.Background()
+
+	var members, callbacks atomic.Int32
+	mux := NewMux()
+	AddHandler(mux, func(ctx context.Context, task *Task[clArgs]) error {
+		if task.Args.N == 99 {
+			callbacks.Add(1)
+		} else {
+			members.Add(1)
+		}
+		return nil
+	})
+	// 멤버는 서로 다른 슬롯 큐 2개, 콜백은 제3의 큐 — 그룹 SET/콜백이 콜백 큐
+	// 슬롯에서 원자 처리되고, 멤버 보고가 슬롯을 넘나드는 구성을 검증.
+	srv := NewServer(client, ServerConfig{
+		Queues:          map[string]int{"alpha": 1, "bravo": 1, "cbq": 1},
+		Concurrency:     4,
+		ForwardInterval: 200 * time.Millisecond,
+	})
+	if err := srv.Start(ctx, mux); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	if _, err := NewGroup().
+		Add(clArgs{N: 31}, WithQueue("alpha")).
+		Add(clArgs{N: 32}, WithQueue("bravo")).
+		Add(clArgs{N: 33}, WithQueue("alpha")).
+		OnComplete(clArgs{N: 99}, WithQueue("cbq")).
+		Enqueue(ctx, c); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	waitFor(t, 10*time.Second, "3 members then callback", func() bool {
+		return members.Load() == 3 && callbacks.Load() == 1
 	})
 }

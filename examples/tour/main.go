@@ -2,7 +2,7 @@
 // do: the core queue, reliability (retry / dead-letter), delayed + unique tasks,
 // the Inspector, the distributed scheduler with leader failover, the retention
 // janitor, the heartbeat, weighted priority queues, completed-task retention,
-// and task chains. It is not a test — it is meant to be *watched*:
+// task chains, and task groups. It is not a test — it is meant to be *watched*:
 // run it and read the output to see tasks being enqueued, processed, retried,
 // dead-lettered, delayed, deduplicated, scheduled across a leader hand-off,
 // auto-cleaned, and kept alive past RecoverMinIdle by the heartbeat.
@@ -80,6 +80,20 @@ type ChainStepArgs struct {
 }
 
 func (ChainStepArgs) Kind() string { return "demo:chainstep" }
+
+// GroupMemberArgs is one member of the group demo.
+type GroupMemberArgs struct {
+	N int `json:"n"`
+}
+
+func (GroupMemberArgs) Kind() string { return "demo:groupmember" }
+
+// GroupReportArgs is the group demo's callback.
+type GroupReportArgs struct {
+	Batch string `json:"batch"`
+}
+
+func (GroupReportArgs) Kind() string { return "demo:groupreport" }
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
@@ -417,6 +431,52 @@ func main() {
 	shutChainCtx, cancelC := context.WithTimeout(context.Background(), 3*time.Second)
 	_ = csrv.Shutdown(shutChainCtx)
 	cancelC()
+
+	section("13) group: N개 병렬 실행 → 전부 성공하면 콜백 1회 (실패 시 대기, 재실행으로 재개)")
+	var gFail atomic.Bool
+	gFail.Store(true)
+	gmux := chronos.NewMux()
+	chronos.AddHandler(gmux, func(ctx context.Context, t *chronos.Task[GroupMemberArgs]) error {
+		if t.Args.N == 2 && gFail.Load() {
+			fmt.Printf("   💥 [group] 멤버 %d 실패 — 그룹 대기\n", t.Args.N)
+			return errors.New("멤버 2 오류")
+		}
+		fmt.Printf("   🧩 [group] 멤버 %d 완료\n", t.Args.N)
+		return nil
+	})
+	chronos.AddHandler(gmux, func(ctx context.Context, t *chronos.Task[GroupReportArgs]) error {
+		fmt.Printf("   🎉 [group] 콜백 실행 — 배치 %s 전원 완료!\n", t.Args.Batch)
+		return nil
+	})
+	gsrv := chronos.NewServer(rdb, chronos.ServerConfig{
+		Queues:      map[string]int{"group-demo": 1},
+		Concurrency: 4,
+	})
+	if err := gsrv.Start(ctx, gmux); err != nil {
+		fmt.Printf("group 서버 start 실패: %v\n", err)
+	}
+	ginfo, err := chronos.NewGroup().
+		Add(GroupMemberArgs{N: 1}, chronos.WithQueue("group-demo")).
+		Add(GroupMemberArgs{N: 2}, chronos.WithQueue("group-demo"), chronos.WithMaxRetry(0)).
+		Add(GroupMemberArgs{N: 3}, chronos.WithQueue("group-demo")).
+		OnComplete(GroupReportArgs{Batch: "demo"}, chronos.WithQueue("group-demo")).
+		Enqueue(ctx, client)
+	if err != nil {
+		fmt.Printf("group enqueue 실패: %v\n", err)
+	}
+	time.Sleep(1500 * time.Millisecond) // 1·3 완료, 2 dead-letter → 그룹 대기
+	if got, gerr := insp.GetTask(ctx, "group-demo", ginfo.MemberIDs[1]); gerr == nil {
+		fmt.Printf("   📮 dead-letter 멤버: %s (그룹 잔여 %d명 — 콜백 대기 중)\n", got.ID, got.GroupPending)
+		gFail.Store(false)
+		fmt.Println("   원인 해소 후 RunTask로 재실행 → 그룹 재개:")
+		if rerr := insp.RunTask(ctx, "group-demo", got.ID); rerr != nil {
+			fmt.Printf("   run 실패: %v\n", rerr)
+		}
+	}
+	time.Sleep(1500 * time.Millisecond) // 멤버 2 재실행 + 콜백
+	shutGroupCtx, cancelG := context.WithTimeout(context.Background(), 3*time.Second)
+	_ = gsrv.Shutdown(shutGroupCtx)
+	cancelG()
 
 	fmt.Println("\n───────────────────────────────────────────────")
 	fmt.Println("투어 완료. 위 로그가 chronos-go가 실제로 동작하는 모습입니다.")
