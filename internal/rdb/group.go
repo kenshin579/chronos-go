@@ -18,19 +18,23 @@ const GroupTTL = 7 * 24 * time.Hour
 
 // groupCompleteCmd removes a finished member from the group's pending SET and,
 // when the SET becomes empty, creates the callback task (create-if-absent) and
-// deletes the SET. A missing SET means the group already completed or expired —
-// the call is then a no-op, which makes redelivered member reports safe. All
-// keys share the callback queue's hash tag (cluster-safe).
+// deletes the SET. While members remain, the SET's TTL is refreshed to the full
+// GroupTTL — a group that keeps making progress never expires mid-flight; only
+// a truly abandoned one does. A missing SET means the group already completed
+// or expired — the call is then a no-op, which makes redelivered member reports
+// safe. All keys share the callback queue's hash tag (cluster-safe).
 // KEYS[1] group set, KEYS[2] callback task hash, KEYS[3] callback stream or
 // scheduled zset.
 // ARGV[1] member id, ARGV[2] callback encoded msg, ARGV[3] callback state,
-// ARGV[4] callback id, ARGV[5] mode ("stream"|"zset"), ARGV[6] score (zset).
+// ARGV[4] callback id, ARGV[5] mode ("stream"|"zset"), ARGV[6] score (zset),
+// ARGV[7] group TTL in seconds (refresh).
 var groupCompleteCmd = redis.NewScript(`
 if redis.call("EXISTS", KEYS[1]) == 0 then
   return 0
 end
 redis.call("SREM", KEYS[1], ARGV[1])
 if redis.call("SCARD", KEYS[1]) > 0 then
+  redis.call("EXPIRE", KEYS[1], ARGV[7])
   return 0
 end
 redis.call("DEL", KEYS[1])
@@ -91,7 +95,9 @@ func (r *RDB) CompleteGroupMember(ctx context.Context, member *base.TaskMessage)
 	}
 
 	// Register the callback queue in the global index up front (separate
-	// command: QueuesKey has no hash tag).
+	// command: QueuesKey has no hash tag). Doing it on every report is slightly
+	// wasteful for non-final members, but the reverse order would open a
+	// "callback created but never indexed" window if SAdd failed afterwards.
 	if err := r.client.SAdd(ctx, base.QueuesKey(), cb.Queue).Err(); err != nil {
 		return false, err
 	}
@@ -117,7 +123,7 @@ func (r *RDB) CompleteGroupMember(ctx context.Context, member *base.TaskMessage)
 		base.TaskKey(cb.Queue, cb.ID),
 		destKey,
 	}
-	argv := []interface{}{member.ID, encoded, int(state), cb.ID, mode, score}
+	argv := []interface{}{member.ID, encoded, int(state), cb.ID, mode, score, int(GroupTTL / time.Second)}
 	n, err := groupCompleteCmd.Run(ctx, r.client, keys, argv...).Int()
 	if err != nil {
 		return false, err

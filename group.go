@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/kenshin579/chronos-go/internal/base"
+	"github.com/kenshin579/chronos-go/internal/rdb"
 )
 
 // Group builds a parallel fan-out: every member is enqueued at once, and when
@@ -59,11 +60,12 @@ func (g *Group) OnComplete(args TaskArgs, opts ...Option) *Group {
 	return g
 }
 
-// Enqueue creates the group's pending-member record first (so a partially
-// failed enqueue can never fire the callback early), then enqueues every
-// member. Members enqueue sequentially and non-atomically: on error, already
-// enqueued members will still run, and the group simply never completes (its
-// record expires after rdb.GroupTTL).
+// Enqueue validates every member up front, creates the group's pending-member
+// record (so a partially failed enqueue can never fire the callback early),
+// then enqueues every member. Enqueueing is sequential and non-atomic only
+// against infrastructure failures: a network error midway leaves already
+// enqueued members running and the group incomplete (its record expires after
+// rdb.GroupTTL).
 func (g *Group) Enqueue(ctx context.Context, c *Client) (*GroupInfo, error) {
 	if len(g.members) == 0 {
 		return nil, errors.New("chronos: group needs at least one member")
@@ -84,34 +86,54 @@ func (g *Group) Enqueue(ctx context.Context, c *Client) (*GroupInfo, error) {
 		memberIDs[i] = fmt.Sprintf("%s:m%d", groupID, i)
 	}
 
-	// 1) Register the pending-member SET before any member can possibly finish.
-	if err := c.rdb.CreateGroup(ctx, cbLink.Queue, groupID, memberIDs); err != nil {
-		return nil, err
+	// Validate and snapshot every member BEFORE creating any Redis state, so a
+	// deterministic builder error cannot leave a half-enqueued, stranded group.
+	type pendingMember struct {
+		msg     *base.TaskMessage
+		options enqueueOptions
 	}
-
-	// 2) Enqueue the members.
+	pending := make([]pendingMember, 0, len(g.members))
 	for i, m := range g.members {
 		options, err := resolveChainOptions(m.opts)
 		if err != nil {
 			return nil, fmt.Errorf("group member %d: %w", i, err)
 		}
+		if options.noArchive {
+			return nil, fmt.Errorf("group member %d: WithDeadLetterDiscard would strand the group (no dead-letter left to re-run)", i)
+		}
+		if !options.processAt.IsZero() && time.Until(options.processAt) > rdb.GroupTTL {
+			return nil, fmt.Errorf("group member %d: WithProcessIn/WithProcessAt exceeds the group TTL (%v)", i, rdb.GroupTTL)
+		}
 		payload, err := encodeArgs(m.args)
 		if err != nil {
 			return nil, fmt.Errorf("group member %d: %w", i, err)
 		}
-		msg := &base.TaskMessage{
-			ID:            memberIDs[i],
-			Kind:          m.args.Kind(),
-			Payload:       payload,
-			Queue:         options.queue,
-			MaxRetry:      options.maxRetry,
-			NoArchive:     options.noArchive,
-			Retention:     int64(options.retention / time.Second),
-			GroupID:       groupID,
-			GroupQueue:    cbLink.Queue,
-			GroupCallback: &cbLink,
-		}
-		if err := dispatchMessage(ctx, c, msg, options); err != nil {
+		pending = append(pending, pendingMember{
+			msg: &base.TaskMessage{
+				ID:            memberIDs[i],
+				Kind:          m.args.Kind(),
+				Payload:       payload,
+				Queue:         options.queue,
+				MaxRetry:      options.maxRetry,
+				Retention:     int64(options.retention / time.Second),
+				GroupID:       groupID,
+				GroupQueue:    cbLink.Queue,
+				GroupCallback: &cbLink,
+			},
+			options: options,
+		})
+	}
+
+	// 1) Register the pending-member SET before any member can possibly finish.
+	if err := c.rdb.CreateGroup(ctx, cbLink.Queue, groupID, memberIDs); err != nil {
+		return nil, err
+	}
+
+	// 2) Enqueue the members (sequential, non-atomic: a network failure midway
+	// leaves earlier members running and the group incomplete — its record
+	// expires after rdb.GroupTTL and the callback never fires).
+	for i, p := range pending {
+		if err := dispatchMessage(ctx, c, p.msg, p.options); err != nil {
 			return nil, fmt.Errorf("group member %d: %w", i, err)
 		}
 	}

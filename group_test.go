@@ -39,6 +39,16 @@ func TestGroup_BuilderValidation(t *testing.T) {
 		Enqueue(ctx, c); err == nil {
 		t.Error("WithProcessAt callback: want error")
 	}
+	// 멤버의 WithDeadLetterDiscard → 에러 (그룹 좌초 방지).
+	if _, err := NewGroup().Add(emailArgs{UserID: "a"}, WithDeadLetterDiscard()).
+		OnComplete(emailArgs{UserID: "cb"}).Enqueue(ctx, c); err == nil {
+		t.Error("WithDeadLetterDiscard member: want error")
+	}
+	// 그룹 TTL을 넘는 스케줄 → 에러 (SET 만료 후 완료 → 콜백 무음 소실 방지).
+	if _, err := NewGroup().Add(emailArgs{UserID: "a"}, WithProcessIn(8*24*time.Hour)).
+		OnComplete(emailArgs{UserID: "cb"}).Enqueue(ctx, c); err == nil {
+		t.Error("member scheduled beyond GroupTTL: want error")
+	}
 
 	// 정상: GroupInfo 반환.
 	info, err := NewGroup().
@@ -175,14 +185,14 @@ func TestGroup_StalledByDeadLetterResumesViaRunTask(t *testing.T) {
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		got, gerr := insp.GetTask(ctx, "default", deadID)
-		if gerr == nil && got.State == "archived" {
-			if got.GroupID != info.GroupID || got.GroupPending != 1 {
-				t.Fatalf("dead member group info wrong: %+v", got)
+		if gerr == nil && got.State == "archived" && got.GroupPending == 1 {
+			if got.GroupID != info.GroupID {
+				t.Fatalf("dead member group id wrong: %+v", got)
 			}
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("member 2 never dead-lettered")
+			t.Fatal("member 2 never dead-lettered with 1 pending")
 		}
 		time.Sleep(50 * time.Millisecond)
 	}

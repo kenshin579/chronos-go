@@ -204,8 +204,11 @@ info, err := chronos.NewGroup().
 - **A failed member parks the group.** Its dead-letter shows the group
   (`GroupID`, remaining members via `GroupPending` in the Inspector); re-run it
   and, once it succeeds, the callback fires if it was the last one.
-- Abandoned groups (a member deleted and never re-run) expire after 7 days —
-  the callback then never fires.
+- Group state lives for 7 days and every member completion renews it, so only
+  a truly abandoned group (a member deleted, or dead-lettered and never re-run)
+  expires — the callback then never fires. Members cannot be scheduled beyond
+  that window, and `WithDeadLetterDiscard` is rejected for members (both would
+  strand the group).
 - Enqueueing members is not atomic: if it fails midway, already-enqueued
   members still run, but the callback can never fire early.
 - Not yet composable with chains (no group-as-chain-link); callback payloads

@@ -104,6 +104,33 @@ func TestGroup_DelayedCallbackGoesToScheduled(t *testing.T) {
 	}
 }
 
+func TestGroup_ReportRefreshesTTL(t *testing.T) {
+	client := testutil.NewRedis(t)
+	r := NewRDB(client)
+	ctx := context.Background()
+
+	if err := r.CreateGroup(ctx, "cbq", "gr", []string{"gr:m0", "gr:m1"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// TTL을 인위적으로 짧게 줄인 뒤, 멤버 보고가 다시 GroupTTL로 늘리는지 확인.
+	if err := client.Expire(ctx, base.GroupKey("cbq", "gr"), time.Minute).Err(); err != nil {
+		t.Fatalf("expire: %v", err)
+	}
+	if _, err := r.CompleteGroupMember(ctx, &base.TaskMessage{
+		ID: "gr:m0", Kind: "m", Queue: "default", GroupID: "gr", GroupQueue: "cbq",
+		GroupCallback: &base.ChainLink{Kind: "cb", Payload: []byte(`{}`), Queue: "cbq", MaxRetry: 25},
+	}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	ttl, err := client.TTL(ctx, base.GroupKey("cbq", "gr")).Result()
+	if err != nil {
+		t.Fatalf("ttl: %v", err)
+	}
+	if ttl <= time.Minute {
+		t.Errorf("ttl = %v, want refreshed to ~%v", ttl, GroupTTL)
+	}
+}
+
 func TestGroup_SetHasTTL(t *testing.T) {
 	client := testutil.NewRedis(t)
 	r := NewRDB(client)

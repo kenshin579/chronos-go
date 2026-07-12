@@ -63,7 +63,7 @@ type TaskInfo struct {
 	ChainPending int // number of chain links still queued behind this task (0 = none/last)
 
 	GroupID      string // group this task belongs to ("" = none)
-	GroupPending int    // members of that group not yet succeeded (populated by GetTask only)
+	GroupPending int    // members of that group not yet succeeded; populated by GetTask only. 0 also when the group finished or its record expired (see rdb.GroupTTL) or the lookup failed — it is a hint, not an authority.
 }
 
 // Client enqueues tasks.
