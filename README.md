@@ -34,9 +34,9 @@ long processing.
 - **Weighted priority queues** — queue weights are honored via smooth weighted
   round-robin (no starvation), or set `StrictPriority` to always drain
   higher-weight queues first.
-- **Chains** — run tasks in sequence (`NewChain().Then(...).Then(...)`); a link
-  runs only after its predecessor succeeds, a failed link stops the chain, and
-  re-running its dead-letter resumes it.
+- **Chains & groups** — run tasks in sequence (`NewChain`) or fan out in
+  parallel and fire a callback when every member succeeds (`NewGroup`); a
+  failure stops the flow, and re-running its dead-letter resumes it.
 - **Heartbeat** — refreshes the lease and unique lock of in-flight tasks, so a
   long-running task is neither reclaimed nor loses its lock mid-processing.
 - **Self-cleaning** — a janitor trims dead-lettered and retained-completed
@@ -186,6 +186,31 @@ info, err := chronos.NewChain().
 - Each link carries its remaining tail in its message, so very long chains grow
   the message size — keep chains reasonably short.
 
+## Groups
+
+Fan out members in parallel and run a callback once **all of them succeed**:
+
+```go
+info, err := chronos.NewGroup().
+	Add(ResizeArgs{File: "a.jpg"}).
+	Add(ResizeArgs{File: "b.jpg"}, chronos.WithQueue("low")).
+	OnComplete(ReportArgs{Batch: "b1"}, chronos.WithRetention(time.Hour)).
+	Enqueue(ctx, client)
+```
+
+- Members run on any queues with per-member options; the callback fires exactly
+  once while its record exists (idempotent tracking — an at-least-once
+  redelivery cannot double-fire it).
+- **A failed member parks the group.** Its dead-letter shows the group
+  (`GroupID`, remaining members via `GroupPending` in the Inspector); re-run it
+  and, once it succeeds, the callback fires if it was the last one.
+- Abandoned groups (a member deleted and never re-run) expire after 7 days —
+  the callback then never fires.
+- Enqueueing members is not atomic: if it fails midway, already-enqueued
+  members still run, but the callback can never fire early.
+- Not yet composable with chains (no group-as-chain-link); callback payloads
+  are fixed at build time (no result passing).
+
 ## Scheduling (interval & cron)
 
 Register periodic jobs on a `Scheduler`. Every instance may call `Start`; only
@@ -312,8 +337,8 @@ crashes after finishing but before acking). **Make handlers idempotent.**
 - The unique lock is heartbeat-renewed only while a task is *actively
   processing*; while it waits in the scheduled/retry set, it is covered by its
   TTL — set the TTL comfortably above expected waiting time.
-- Not yet built: a web UI, task groups (parallel fan-out with a completion
-  callback — chains are supported).
+- Not yet built: a web UI, chain×group composition (groups and chains cannot
+  nest yet), result passing between workflow steps.
 
 ## Development
 
