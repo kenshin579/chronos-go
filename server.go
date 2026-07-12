@@ -20,6 +20,10 @@ import (
 // so Shutdown stays responsive.
 const pollBlock = 1 * time.Second
 
+// maxFetchBatch caps how many tasks one DequeueBatch claims, keeping a single
+// XREADGROUP (and the follow-up pipelines) short even at high Concurrency.
+const maxFetchBatch = 128
+
 // forwardBatchSize and recoverBatchSize bound how many tasks each maintenance
 // tick moves, keeping individual Redis calls short.
 const (
@@ -287,15 +291,23 @@ func (s *Server) fetchLoop(ctx context.Context) {
 			}
 		}
 
-		var (
-			msg      *base.TaskMessage
-			streamID string
-			found    bool
-		)
+		// 배치 크기: 지금 놀고 있는 워커 수만큼 한 번에 가져온다(우리가 잡은
+		// 슬롯 1 + 남은 빈 슬롯). 근사치라도 안전하다 — 초과분은 아래 디스패치
+		// 단계에서 세마포어 획득으로 백프레셔가 걸린다.
+		batch := 1 + (cap(s.sem) - len(s.sem))
+		if batch < 1 {
+			batch = 1
+		}
+		if batch > maxFetchBatch {
+			batch = maxFetchBatch
+		}
 
-		// 1) 우선순위 순서대로 논블로킹 조회.
+		var tasks []rdb.Dequeued
+
+		// 1) 우선순위 순서대로 논블로킹 조회. 배치는 한 라운드에 한 큐에서만
+		// 가져온다(우선순위 의미 단순 유지).
 		for _, q := range order {
-			m, sid, err := s.rdb.Dequeue(ctx, s.consumer, -1, q)
+			ts, err := s.rdb.DequeueBatch(ctx, s.consumer, -1, q, batch)
 			if err == rdb.ErrNoTask {
 				continue
 			}
@@ -307,13 +319,13 @@ func (s *Server) fetchLoop(ctx context.Context) {
 				s.logger.Error("chronos: dequeue failed", "queue", q, "error", err)
 				continue
 			}
-			msg, streamID, found = m, sid, true
+			tasks = ts
 			break
 		}
 
 		// 2) 모두 비었으면 이번 라운드의 첫 큐에 블로킹(응답성 유지). weighted에선
 		// SWRR가 라운드마다 다른 큐를 뽑으므로 블로킹 감시도 가중치대로 분배된다.
-		if !found {
+		if len(tasks) == 0 {
 			// order[0] should never be empty (Start rejects an empty Queues, so
 			// the picker and byWeight are non-empty), but guard so a stray ""
 			// can't turn into a busy-loop blocking on a nonexistent stream.
@@ -322,7 +334,7 @@ func (s *Server) fetchLoop(ctx context.Context) {
 				return
 			}
 			q := order[0]
-			m, sid, err := s.rdb.Dequeue(ctx, s.consumer, pollBlock, q)
+			ts, err := s.rdb.DequeueBatch(ctx, s.consumer, pollBlock, q, batch)
 			if err == rdb.ErrNoTask {
 				<-s.sem
 				continue
@@ -337,22 +349,36 @@ func (s *Server) fetchLoop(ctx context.Context) {
 				time.Sleep(100 * time.Millisecond)
 				continue
 			}
-			msg, streamID, found = m, sid, true
+			tasks = ts
 		}
 
-		if !found {
+		if len(tasks) == 0 {
 			<-s.sem
 			continue
 		}
 
-		s.wg.Add(1)
-		go func(qname, sid string, m *base.TaskMessage) {
-			defer s.wg.Done()
-			defer func() { <-s.sem }()
-			s.trackInflight(m.ID, inflightEntry{streamID: sid, queue: qname, uniqueKey: m.UniqueKey})
-			defer s.untrackInflight(m.ID)
-			s.process(ctx, qname, sid, m)
-		}(msg.Queue, streamID, msg)
+		// 디스패치: 첫 태스크는 이미 잡아둔 세마포어 슬롯을 쓰고, 나머지는
+		// 각각 슬롯을 새로 획득한 뒤 워커를 띄운다(백프레셔). 배치의 태스크는
+		// 이미 우리 PEL에 클레임되어 있으므로, 슬롯을 기다리다 ctx가 취소되면
+		// 남은 태스크는 PEL에 남는다 — 워커가 죽었을 때와 같은 경로로
+		// recoverer가 RecoverMinIdle 이후 재전달한다.
+		for i, dt := range tasks {
+			if i > 0 {
+				select {
+				case s.sem <- struct{}{}:
+				case <-ctx.Done():
+					return
+				}
+			}
+			s.wg.Add(1)
+			go func(qname, sid string, m *base.TaskMessage) {
+				defer s.wg.Done()
+				defer func() { <-s.sem }()
+				s.trackInflight(m.ID, inflightEntry{streamID: sid, queue: qname, uniqueKey: m.UniqueKey})
+				defer s.untrackInflight(m.ID)
+				s.process(ctx, qname, sid, m)
+			}(dt.Msg.Queue, dt.StreamID, dt.Msg)
+		}
 	}
 }
 
