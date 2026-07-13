@@ -385,6 +385,10 @@ make check        # gofmt + vet + go test ./... -race -p 1 + contrib tests
 Cluster integration tests are opt-in: `make test-cluster` (see
 [`deploy/redis-cluster`](deploy/redis-cluster)).
 
+Before major releases, run `make soak` — an hour-long leak soak against a
+local Redis (heap / goroutine / keyspace trend check; `-duration 4h` for
+v1.0.0-grade ones). See [`benchmarks/README.md`](benchmarks/README.md).
+
 ## License
 
 [MIT](LICENSE)
