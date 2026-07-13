@@ -69,6 +69,13 @@ func TestThenGroup_Validation(t *testing.T) {
 		ThenGroup(NewGroup().Add(wfEnc{}, WithUnique(time.Minute)).OnComplete(wfMerge{}))); !strings.Contains(msg, "WithUnique") {
 		t.Errorf("member unique: %s", msg)
 	}
+	// 멤버 지연이 GroupTTL(7일)을 넘으면 거부 — pending SET이 멤버 실행 전에
+	// 만료되어 콜백이 영영 뜨지 않는 조용한 좌초를 막는다(독립 Group.Enqueue와
+	// 동일 규칙).
+	if msg := enqueueErr(t, NewChain().Then(wfPrep{}).
+		ThenGroup(NewGroup().Add(wfEnc{}, WithProcessIn(8*24*time.Hour)).OnComplete(wfMerge{}))); !strings.Contains(msg, "TTL") {
+		t.Errorf("member delay over TTL: %s", msg)
+	}
 }
 
 func TestThenGroup_SnapshotShape(t *testing.T) {

@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/kenshin579/chronos-go/internal/base"
+	"github.com/kenshin579/chronos-go/internal/rdb"
 )
 
 // Chain builds a sequence of tasks in which each link is enqueued only after
@@ -167,14 +168,11 @@ func snapshotGroupStage(g *Group, i int, isLast bool) (base.ChainLink, error) {
 		if err != nil {
 			return base.ChainLink{}, fmt.Errorf("chain stage %d member %d: %w", i, j, err)
 		}
-		var delay int64
-		if !o.processAt.IsZero() {
-			if d := time.Until(o.processAt); d > 0 {
-				delay = int64((d + time.Second/2) / time.Second)
-				if delay == 0 {
-					delay = 1
-				}
-			}
+		delay := captureRelativeDelay(o)
+		// 독립 Group.Enqueue와 동일한 상한: 멤버 지연이 GroupTTL을 넘으면 pending
+		// SET이 멤버 실행 전에 만료되어 콜백이 영영 뜨지 않는다(조용한 좌초).
+		if delay > int64(rdb.GroupTTL/time.Second) {
+			return base.ChainLink{}, fmt.Errorf("chain stage %d member %d: WithProcessIn exceeds the group TTL (%v)", i, j, rdb.GroupTTL)
 		}
 		link.Group = append(link.Group, base.GroupMemberLink{
 			Kind:      m.args.Kind(),
@@ -223,17 +221,6 @@ func snapshotChainLink(args TaskArgs, opts []Option, isLast bool) (base.ChainLin
 	if err != nil {
 		return base.ChainLink{}, err
 	}
-	var delay int64
-	if !o.processAt.IsZero() {
-		// WithProcessIn stored an absolute time; capture the intended relative
-		// delay (we are still inside the builder call, so the drift is tiny).
-		if d := time.Until(o.processAt); d > 0 {
-			delay = int64((d + time.Second/2) / time.Second)
-			if delay == 0 {
-				delay = 1
-			}
-		}
-	}
 	return base.ChainLink{
 		Kind:      args.Kind(),
 		Payload:   payload,
@@ -241,6 +228,25 @@ func snapshotChainLink(args TaskArgs, opts []Option, isLast bool) (base.ChainLin
 		MaxRetry:  o.maxRetry,
 		NoArchive: o.noArchive,
 		Retention: int64(o.retention / time.Second),
-		Delay:     delay,
+		Delay:     captureRelativeDelay(o),
 	}, nil
+}
+
+// captureRelativeDelay converts a WithProcessIn-stored absolute time back into
+// the intended relative delay in whole seconds (we are still inside the builder
+// call, so the drift is tiny). Sub-second remainders round to the nearest
+// second, and any positive delay is at least 1s so it is never silently lost.
+func captureRelativeDelay(o enqueueOptions) int64 {
+	if o.processAt.IsZero() {
+		return 0
+	}
+	d := time.Until(o.processAt)
+	if d <= 0 {
+		return 0
+	}
+	delay := int64((d + time.Second/2) / time.Second)
+	if delay == 0 {
+		delay = 1
+	}
+	return delay
 }
