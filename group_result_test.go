@@ -139,6 +139,9 @@ func TestGroup_ResumedMemberResultReachesCallback(t *testing.T) {
 		t.Fatalf("run task: %v", err)
 	}
 
+	// RunTask 재개 직후 데드라인을 재설정해, archived 대기 루프가 시간을 얼마나
+	// 소진했든 콜백 대기가 온전한 예산(10초)을 갖도록 한다(진단 정확도).
+	deadline = time.Now().Add(10 * time.Second)
 	for got.Load() == nil && time.Now().Before(deadline) {
 		time.Sleep(50 * time.Millisecond)
 	}
