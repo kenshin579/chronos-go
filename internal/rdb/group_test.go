@@ -297,6 +297,18 @@ func TestCreateGroupIfAbsent_ThreeStates(t *testing.T) {
 	if n, _ := client.Exists(ctx, base.GroupKey("gq", "c1:1")).Result(); n != 0 {
 		t.Fatal("completed stage must not recreate the pending set")
 	}
+
+	// 펜스(콜백 hash) 소멸 후 재생성(return 2): 만료 직전 잔존 결과 HASH가
+	// 새 라운드에 섞이지 않도록 삭제되어야 한다.
+	client.Del(ctx, base.TaskKey("gq", "c1:1:cb"))
+	client.HSet(ctx, base.GroupResultKey("gq", "c1:1"), "0", "stale")
+	st, err = r.CreateGroupIfAbsent(ctx, "gq", "c1:1", members, "c1:1:cb")
+	if err != nil || st != GroupStageCreated {
+		t.Fatalf("recreate after fence expiry: st=%v err=%v", st, err)
+	}
+	if n, _ := client.Exists(ctx, base.GroupResultKey("gq", "c1:1")).Result(); n != 0 {
+		t.Fatal("recreated stage must delete the leftover result hash")
+	}
 }
 
 // 멤버가 GroupCallbackChain을 실어 나르면 콜백이 꼬리(ChainID/ChainIndex 포함)를

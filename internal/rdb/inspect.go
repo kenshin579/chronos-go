@@ -207,6 +207,20 @@ func (r *RDB) GetTask(ctx context.Context, qname, taskID string) (*base.TaskMess
 	return base.DecodeMessage([]byte(raw))
 }
 
+// TaskState reads a task's authoritative state from its hash's top-level
+// "state" field (not the State inside the msg JSON, which may lag). Returns
+// redis.Nil unchanged when the hash (or its state field) does not exist, so
+// callers can distinguish "task gone" from other errors — e.g. the group-stage
+// drain contract on CreateGroupIfAbsent uses this to detect a leftover
+// completed member.
+func (r *RDB) TaskState(ctx context.Context, qname, taskID string) (base.TaskState, error) {
+	v, err := r.client.HGet(ctx, base.TaskKey(qname, taskID), "state").Int()
+	if err != nil {
+		return 0, err
+	}
+	return base.TaskState(v), nil
+}
+
 // runTaskCmd moves a task from whichever state ZSET holds it into the stream for
 // immediate processing. It only promotes a task that was actually removed from a
 // state ZSET (scheduled/retry/archived/completed): if the task is not in any of
