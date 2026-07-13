@@ -1,6 +1,9 @@
 package base
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestEncodeDecodeMessage_RoundTrip(t *testing.T) {
 	msg := &TaskMessage{
@@ -153,6 +156,42 @@ func TestTaskMessage_GroupRoundTrips(t *testing.T) {
 	}
 	if got.GroupCallback.Kind != "cb" || got.GroupCallback.Delay != 2 {
 		t.Errorf("callback = %+v", got.GroupCallback)
+	}
+}
+
+func TestMessageResultFieldsRoundTrip(t *testing.T) {
+	in := &TaskMessage{
+		ID: "t1", Kind: "k", Queue: "q",
+		Result:       []byte(`{"path":"s3://out"}`),
+		PrevResult:   []byte(`{"n":1}`),
+		GroupResults: [][]byte{[]byte(`{"a":1}`), nil, []byte(`{"b":2}`)},
+		GroupIndex:   2,
+		GroupSize:    3,
+	}
+	b, err := EncodeMessage(in)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	out, err := DecodeMessage(b)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if string(out.Result) != string(in.Result) || string(out.PrevResult) != string(in.PrevResult) {
+		t.Errorf("result fields lost: %+v", out)
+	}
+	if len(out.GroupResults) != 3 || out.GroupResults[1] != nil ||
+		string(out.GroupResults[2]) != `{"b":2}` {
+		t.Errorf("group results wrong: %v", out.GroupResults)
+	}
+	if out.GroupIndex != 2 || out.GroupSize != 3 {
+		t.Errorf("group index/size wrong: %+v", out)
+	}
+	// 빈 필드는 직렬화에서 생략(기존 메시지와 하위호환).
+	empty, _ := EncodeMessage(&TaskMessage{ID: "t2", Kind: "k", Queue: "q"})
+	for _, field := range []string{"result", "prev_result", "group_results", "group_index", "group_size"} {
+		if strings.Contains(string(empty), `"`+field+`"`) {
+			t.Errorf("empty message must omit %q", field)
+		}
 	}
 }
 

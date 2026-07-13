@@ -100,6 +100,24 @@ type TaskMessage struct {
 	// GroupCallback is the callback task snapshot, carried by every member; the
 	// member that empties the pending SET creates it (create-if-absent).
 	GroupCallback *ChainLink `json:"group_callback,omitempty"`
+
+	// Result is the handler's returned value (JSON), set on success by
+	// AddHandlerR handlers. It is relayed to the chain successor's PrevResult
+	// and the group result HASH before ack, and persists with the task only
+	// when the task itself is retained.
+	Result []byte `json:"result,omitempty"`
+	// PrevResult carries the previous chain link's Result (nil on the first
+	// link or when the predecessor produced no result).
+	PrevResult []byte `json:"prev_result,omitempty"`
+	// GroupResults carries every member's Result in Add order (nil entry =
+	// that member produced no result). Set on the callback message when the
+	// group completes; nil when no member produced a result.
+	GroupResults [][]byte `json:"group_results,omitempty"`
+	// GroupIndex is this member's position in its group (Add order, 0-based).
+	GroupIndex int `json:"group_index,omitempty"`
+	// GroupSize is the group's member count, carried by every member so the
+	// completion script can assemble GroupResults in order.
+	GroupSize int `json:"group_size,omitempty"`
 }
 
 // EncodeMessage serializes a TaskMessage for storage in Redis.
