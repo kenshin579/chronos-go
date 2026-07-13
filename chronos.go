@@ -115,6 +115,13 @@ type TaskInfo struct {
 	GroupID      string // group this task belongs to ("" = none)
 	GroupPending int    // members of that group not yet succeeded; populated by GetTask only. 0 also when the group finished or its record expired (see rdb.GroupTTL) or the lookup failed — it is a hint, not an authority.
 	GroupQueue   string // queue holding the group's state (= callback queue)
+
+	// HasResult reports whether the handler produced a result (AddHandlerR).
+	// The result itself travels the workflow (PrevResult/GroupResults); the
+	// Inspector only reports its presence and size.
+	HasResult bool
+	// ResultSize is the result's JSON size in bytes (0 when HasResult=false).
+	ResultSize int
 }
 
 // Client enqueues tasks.

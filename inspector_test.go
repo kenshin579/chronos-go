@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	redis "github.com/redis/go-redis/v9"
+
 	"github.com/kenshin579/chronos-go/internal/base"
 	"github.com/kenshin579/chronos-go/internal/testutil"
 )
@@ -274,6 +276,26 @@ func TestInspector_GroupMembersAndSchedulerStatus(t *testing.T) {
 	ti, err := insp.GetTask(ctx, "default", ginfo.MemberIDs[0])
 	if err != nil || ti.GroupQueue != "default" {
 		t.Errorf("GroupQueue = %q err=%v, want default", ti.GroupQueue, err)
+	}
+}
+
+func TestGetTask_ExposesResultPresence(t *testing.T) {
+	client := testutil.NewRedis(t)
+	ctx := context.Background()
+	// 결과가 있는 완료(retained) 태스크를 직접 심는다.
+	msg := &base.TaskMessage{ID: "r1", Kind: "k", Queue: "iq",
+		State: base.StateCompleted, Result: []byte(`{"v":1}`)}
+	encoded, _ := base.EncodeMessage(msg)
+	client.HSet(ctx, base.TaskKey("iq", "r1"), "msg", encoded, "state", int(base.StateCompleted))
+	client.ZAdd(ctx, base.CompletedKey("iq"), redis.Z{Score: float64(time.Now().Add(time.Hour).Unix()), Member: "r1"})
+
+	insp := NewInspector(client)
+	info, err := insp.GetTask(ctx, "iq", "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.HasResult || info.ResultSize != len(`{"v":1}`) {
+		t.Errorf("HasResult=%v ResultSize=%d", info.HasResult, info.ResultSize)
 	}
 }
 
