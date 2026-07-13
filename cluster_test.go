@@ -25,6 +25,7 @@ package chronos
 //  [x] CreateGroup + groupCompleteCmd (group fan-out)       → TestCluster_GroupFanOut
 //  [x] requeueCmd (shutdown batch return)                   → TestCluster_RequeueReturnsTask
 //  [x] pause/resume (global SET, consumption gate)          → TestCluster_PauseResume
+//  [x] 결과 릴레이 (chain PrevResult + group cjson 내장 Lua) → TestCluster_ResultRelay
 
 import (
 	"context"
@@ -698,3 +699,78 @@ func TestCluster_PauseResume(t *testing.T) {
 	}
 	waitFor(t, 10*time.Second, "consumption after resume", func() bool { return done.Load() == 1 })
 }
+
+// 결과 릴레이: 확장된 groupCompleteCmd(KEYS 4개 — 전부 콜백 큐 해시 슬롯)와
+// chain PrevResult가 라이브 클러스터에서 CROSSSLOT 없이 동작하는지.
+func TestCluster_ResultRelay(t *testing.T) {
+	client := testutil.NewClusterRedis(t)
+	ctx := context.Background()
+
+	var chainGot, groupGot atomic.Int64
+	mux := NewMux()
+	AddHandlerR(mux, func(ctx context.Context, task *Task[clRelayArgs]) (clRelayOut, error) {
+		return clRelayOut{V: task.Args.N * 2}, nil
+	})
+	AddHandler(mux, func(ctx context.Context, task *Task[clRelayCheckArgs]) error {
+		if out, err := PrevResult[clRelayOut](task); err == nil {
+			chainGot.Store(int64(out.V))
+		}
+		return nil
+	})
+	AddHandler(mux, func(ctx context.Context, task *Task[clRelayCbArgs]) error {
+		if rs, err := GroupResults[clRelayOut](task); err == nil && len(rs) == 2 {
+			groupGot.Store(int64(rs[0].V + rs[1].V))
+		}
+		return nil
+	})
+
+	srv := NewServer(client, ServerConfig{Queues: map[string]int{"clres": 1}, Concurrency: 4})
+	if err := srv.Start(ctx, mux); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Shutdown(context.Background())
+	c := NewClient(client)
+
+	if _, err := NewChain().
+		Then(clRelayArgs{N: 21}, WithQueue("clres")).
+		Then(clRelayCheckArgs{}, WithQueue("clres")).
+		Enqueue(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewGroup().
+		Add(clRelayArgs{N: 1}, WithQueue("clres")).
+		Add(clRelayArgs{N: 2}, WithQueue("clres")).
+		OnComplete(clRelayCbArgs{}, WithQueue("clres")).
+		Enqueue(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(15 * time.Second)
+	for (chainGot.Load() == 0 || groupGot.Load() == 0) && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if chainGot.Load() != 42 {
+		t.Errorf("chain relay = %d, want 42", chainGot.Load())
+	}
+	if groupGot.Load() != 6 { // 1*2 + 2*2
+		t.Errorf("group results sum = %d, want 6", groupGot.Load())
+	}
+}
+
+type clRelayArgs struct {
+	N int `json:"n"`
+}
+
+func (clRelayArgs) Kind() string { return "clres:m" }
+
+type clRelayOut struct {
+	V int `json:"v"`
+}
+
+type clRelayCheckArgs struct{}
+
+func (clRelayCheckArgs) Kind() string { return "clres:chk" }
+
+type clRelayCbArgs struct{}
+
+func (clRelayCbArgs) Kind() string { return "clres:cb" }

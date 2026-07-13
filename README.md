@@ -218,8 +218,19 @@ info, err := chronos.NewGroup().
   strand the group).
 - Enqueueing members is not atomic: if it fails midway, already-enqueued
   members still run, but the callback can never fire early.
-- Not yet composable with chains (no group-as-chain-link); callback payloads
-  are fixed at build time (no result passing).
+- Not yet composable with chains (no group-as-chain-link).
+
+### Passing results between steps
+
+Register a handler with `AddHandlerR` and its success return value flows
+through the workflow: the next chain link reads it with
+`chronos.PrevResult[R](task)`, and a group's callback receives every member's
+result in Add order via `chronos.GroupResults[R](task)` (or raw bytes with
+`task.RawGroupResults()`). Results are carried inside task messages — no
+extra keys, no TTL to manage — and survive retries, redeliveries and
+dead-letter re-runs. A result's JSON form is capped at 1 MiB
+(`MaxResultSize`); larger results dead-letter the task without retry, so pass
+a reference (object-store path, row ID) for big artifacts.
 
 ## Scheduling (interval & cron)
 
@@ -370,8 +381,7 @@ crashes after finishing but before acking). **Make handlers idempotent.**
 - The unique lock is heartbeat-renewed only while a task is *actively
   processing*; while it waits in the scheduled/retry set, it is covered by its
   TTL — set the TTL comfortably above expected waiting time.
-- Not yet built: chain×group composition (groups and chains cannot nest yet),
-  result passing between workflow steps.
+- Not yet built: chain×group composition (groups and chains cannot nest yet).
 
 ## Development
 
