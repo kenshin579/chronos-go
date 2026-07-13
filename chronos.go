@@ -3,6 +3,9 @@ package chronos
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -33,8 +36,10 @@ type TaskArgs interface {
 type Task[T TaskArgs] struct {
 	Args T
 
-	id    string
-	queue string
+	id           string
+	queue        string
+	prevResult   []byte
+	groupResults [][]byte
 }
 
 // ID returns the task's unique identifier.
@@ -42,6 +47,49 @@ func (t *Task[T]) ID() string { return t.id }
 
 // Queue returns the queue the task was enqueued to.
 func (t *Task[T]) Queue() string { return t.queue }
+
+// ErrNoResult is returned when the previous step (or a group member) produced
+// no result — the handler was registered with AddHandler, or this is the
+// first chain link.
+var ErrNoResult = errors.New("chronos: no result")
+
+// PrevResult decodes the previous chain link's result:
+//
+//	out, err := chronos.PrevResult[EncodeResult](task)
+func PrevResult[R any, T TaskArgs](t *Task[T]) (R, error) {
+	var out R
+	if len(t.prevResult) == 0 {
+		return out, ErrNoResult
+	}
+	if err := json.Unmarshal(t.prevResult, &out); err != nil {
+		return out, fmt.Errorf("chronos: decode prev result: %w", err)
+	}
+	return out, nil
+}
+
+// GroupResults decodes every member result in Add order. It assumes a
+// homogeneous group (every member returned R); a member without a result
+// fails with ErrNoResult. For heterogeneous or partial results use
+// RawGroupResults.
+func GroupResults[R any, T TaskArgs](t *Task[T]) ([]R, error) {
+	if t.groupResults == nil {
+		return nil, ErrNoResult
+	}
+	out := make([]R, len(t.groupResults))
+	for i, raw := range t.groupResults {
+		if len(raw) == 0 {
+			return nil, fmt.Errorf("chronos: group member %d: %w", i, ErrNoResult)
+		}
+		if err := json.Unmarshal(raw, &out[i]); err != nil {
+			return nil, fmt.Errorf("chronos: decode group member %d result: %w", i, err)
+		}
+	}
+	return out, nil
+}
+
+// RawGroupResults returns raw member results in Add order (nil = no result).
+// Nil when this task is not a group callback or no member produced a result.
+func (t *Task[T]) RawGroupResults() [][]byte { return t.groupResults }
 
 // TaskInfo describes an enqueued or stored task. Enqueue returns one with only
 // ID/Kind/Queue set; the Inspector fills the rest for stored tasks.
