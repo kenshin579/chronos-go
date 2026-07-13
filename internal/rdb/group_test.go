@@ -222,6 +222,48 @@ func TestCompleteGroupMember_NoResultsMeansNoField(t *testing.T) {
 	}
 }
 
+// 결과가 있는 멤버가 결과 HASH를 만든 뒤, 무결과 멤버가 뒤늦게(트리클) 보고할 때
+// 결과 HASH의 TTL도 pending SET과 lockstep으로 GroupTTL 근처까지 갱신되는지 확인.
+// 이 갱신이 없으면 무결과 멤버가 GroupTTL보다 긴 간격으로 보고하는 동안 HASH가
+// SET보다 먼저 만료되어 이미 기록된 결과가 소실될 수 있다.
+func TestCompleteGroupMember_NoResultReportRefreshesResultHashTTL(t *testing.T) {
+	client := testutil.NewRedis(t)
+	r := NewRDB(client)
+	ctx := context.Background()
+
+	cb := &base.ChainLink{Kind: "g:cb", Payload: []byte(`{}`), Queue: "gq"}
+	mk := func(i int, result []byte) *base.TaskMessage {
+		return &base.TaskMessage{
+			ID: "g3:m" + strconv.Itoa(i), Kind: "g:m", Queue: "gq",
+			GroupID: "g3", GroupQueue: "gq", GroupCallback: cb,
+			GroupIndex: i, GroupSize: 3, Result: result,
+		}
+	}
+	if err := r.CreateGroup(ctx, "gq", "g3", []string{"g3:m0", "g3:m1", "g3:m2"}); err != nil {
+		t.Fatal(err)
+	}
+	// 결과 있는 멤버가 HASH를 만든다(TTL = GroupTTL).
+	if fired, err := r.CompleteGroupMember(ctx, mk(0, []byte(`{"v":0}`))); err != nil || fired {
+		t.Fatalf("m0: fired=%v err=%v", fired, err)
+	}
+	// HASH TTL을 인위적으로 짧게 줄여, 무결과 보고가 lockstep으로 다시 늘리는지 본다.
+	resultKey := base.GroupResultKey("gq", "g3")
+	if err := client.Expire(ctx, resultKey, time.Minute).Err(); err != nil {
+		t.Fatalf("expire: %v", err)
+	}
+	// 무결과 멤버 보고(ARGV[8] == "").
+	if fired, err := r.CompleteGroupMember(ctx, mk(1, nil)); err != nil || fired {
+		t.Fatalf("m1: fired=%v err=%v", fired, err)
+	}
+	ttl, err := client.TTL(ctx, resultKey).Result()
+	if err != nil {
+		t.Fatalf("ttl: %v", err)
+	}
+	if ttl <= time.Minute {
+		t.Errorf("result hash ttl = %v, want refreshed to ~%v", ttl, GroupTTL)
+	}
+}
+
 func TestGroup_SetHasTTL(t *testing.T) {
 	client := testutil.NewRedis(t)
 	r := NewRDB(client)

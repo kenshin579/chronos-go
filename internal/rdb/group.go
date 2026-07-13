@@ -20,8 +20,11 @@ const GroupTTL = 7 * 24 * time.Hour
 // groupCompleteCmd removes a finished member from the group's pending SET and,
 // when the SET becomes empty, creates the callback task (create-if-absent) and
 // deletes the SET. While members remain, the SET's TTL is refreshed to the full
-// GroupTTL — a group that keeps making progress never expires mid-flight; only
-// a truly abandoned one does. A missing SET means the group already completed
+// GroupTTL — and the result HASH's TTL is refreshed in lockstep (when it exists)
+// so a result-less member trickling reports slower than GroupTTL can never let
+// the HASH expire ahead of the SET and drop already-recorded results. A group
+// that keeps making progress never expires mid-flight; only a truly abandoned
+// one does. A missing SET means the group already completed
 // or expired — the call is then a no-op, which makes redelivered member reports
 // safe. All keys share the callback queue's hash tag (cluster-safe).
 // The member's result (base64) is stored in the result HASH (KEYS[4]) under
@@ -51,6 +54,9 @@ if ARGV[8] ~= "" then
 end
 if redis.call("SCARD", KEYS[1]) > 0 then
   redis.call("EXPIRE", KEYS[1], ARGV[7])
+  if redis.call("EXISTS", KEYS[4]) == 1 then
+    redis.call("EXPIRE", KEYS[4], ARGV[7])
+  end
   return 0
 end
 local cb = ARGV[2]
