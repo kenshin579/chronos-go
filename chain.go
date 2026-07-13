@@ -23,10 +23,16 @@ import (
 // recreated — the usual at-least-once caveat. Per-link WithRetention keeps the
 // successor's record around and closes that window for its duration.
 type Chain struct {
-	links []struct {
-		args TaskArgs
-		opts []Option
-	}
+	stages []chainStage
+}
+
+// chainStage is one step of a chain: a single task (isGroup false) or a
+// parallel group stage.
+type chainStage struct {
+	args    TaskArgs
+	opts    []Option
+	group   *Group // parallel stage's group (args/opts unused)
+	isGroup bool   // set by ThenGroup, even for a nil group (validated at snapshot)
 }
 
 // NewChain returns an empty chain builder.
@@ -37,39 +43,46 @@ func NewChain() *Chain { return &Chain{} }
 // are rejected at Enqueue time (the chain owns task IDs, and unique dedup
 // inside chains is not supported).
 func (ch *Chain) Then(args TaskArgs, opts ...Option) *Chain {
-	ch.links = append(ch.links, struct {
-		args TaskArgs
-		opts []Option
-	}{args, opts})
+	ch.stages = append(ch.stages, chainStage{args: args, opts: opts})
+	return ch
+}
+
+// ThenGroup appends a parallel stage: every member of g runs concurrently
+// (each receiving the previous stage's result via PrevResult) and g's
+// OnComplete callback fans the member results in (GroupResults) before the
+// chain continues with the callback's own result. g must not be reused or
+// mutated afterwards. A group cannot be the chain's first stage — use
+// NewGroup directly when no preceding step exists.
+func (ch *Chain) ThenGroup(g *Group) *Chain {
+	ch.stages = append(ch.stages, chainStage{group: g, isGroup: true})
 	return ch
 }
 
 // Enqueue makes the first link available for processing and returns its
 // TaskInfo. Later links run only as their predecessors succeed.
 func (ch *Chain) Enqueue(ctx context.Context, c *Client) (*TaskInfo, error) {
-	if len(ch.links) == 0 {
+	if len(ch.stages) == 0 {
 		return nil, errors.New("chronos: empty chain")
+	}
+	if ch.stages[0].isGroup {
+		return nil, errors.New("chronos: a group cannot be the chain's first stage — start with Then, or use NewGroup directly")
 	}
 
 	chainID := uuid.NewString()
 
-	// Snapshot links 1..n-1 as the first link's tail.
-	tail := make([]base.ChainLink, 0, len(ch.links)-1)
-	for i := 1; i < len(ch.links); i++ {
-		link, err := snapshotChainLink(ch.links[i].args, ch.links[i].opts, i == len(ch.links)-1)
-		if err != nil {
-			return nil, fmt.Errorf("chain link %d: %w", i, err)
-		}
-		tail = append(tail, link)
+	// Snapshot stages 1..n-1 as the first link's tail.
+	tail, err := ch.snapshotTail()
+	if err != nil {
+		return nil, err
 	}
 
 	// First link: resolve options like Enqueue does, with chain-owned identity.
-	first := ch.links[0]
+	first := ch.stages[0]
 	options, err := resolveChainOptions(first.opts)
 	if err != nil {
 		return nil, fmt.Errorf("chain link 0: %w", err)
 	}
-	if len(ch.links) > 1 && options.noArchive {
+	if len(ch.stages) > 1 && options.noArchive {
 		return nil, fmt.Errorf("chain link 0: %w", errNoArchiveMidChain)
 	}
 	payload, err := encodeArgs(first.args)
@@ -92,6 +105,87 @@ func (ch *Chain) Enqueue(ctx context.Context, c *Client) (*TaskInfo, error) {
 		return nil, err
 	}
 	return &TaskInfo{ID: msg.ID, Kind: msg.Kind, Queue: msg.Queue, ChainPending: len(tail)}, nil
+}
+
+// snapshotTail freezes stages 1..n-1 into ChainLinks (test seam).
+func (ch *Chain) snapshotTail() ([]base.ChainLink, error) {
+	tail := make([]base.ChainLink, 0, len(ch.stages)-1)
+	for i := 1; i < len(ch.stages); i++ {
+		link, err := ch.snapshotStage(i)
+		if err != nil {
+			return nil, err
+		}
+		tail = append(tail, link)
+	}
+	return tail, nil
+}
+
+// snapshotStage freezes stage i (single task or group) into a ChainLink.
+func (ch *Chain) snapshotStage(i int) (base.ChainLink, error) {
+	st := ch.stages[i]
+	isLast := i == len(ch.stages)-1
+	if !st.isGroup {
+		link, err := snapshotChainLink(st.args, st.opts, isLast)
+		if err != nil {
+			return base.ChainLink{}, fmt.Errorf("chain link %d: %w", i, err)
+		}
+		return link, nil
+	}
+	return snapshotGroupStage(st.group, i, isLast)
+}
+
+// snapshotGroupStage freezes a parallel stage: the link's own task fields
+// describe the fan-in callback; Group holds the members.
+func snapshotGroupStage(g *Group, i int, isLast bool) (base.ChainLink, error) {
+	if g == nil {
+		return base.ChainLink{}, fmt.Errorf("chain stage %d: nil group", i)
+	}
+	if len(g.members) == 0 {
+		return base.ChainLink{}, fmt.Errorf("chain stage %d: group needs at least one member", i)
+	}
+	if !g.hasCallback {
+		return base.ChainLink{}, fmt.Errorf("chain stage %d: group needs a callback (OnComplete)", i)
+	}
+	// 콜백: 마지막 스테이지의 콜백만 noArchive 허용(단일 링크 규칙과 동일).
+	link, err := snapshotChainLink(g.callback, g.callbackOpts, isLast)
+	if err != nil {
+		return base.ChainLink{}, fmt.Errorf("chain stage %d callback: %w", i, err)
+	}
+	link.Group = make([]base.GroupMemberLink, 0, len(g.members))
+	for j, m := range g.members {
+		o, err := resolveChainOptions(m.opts)
+		if err != nil {
+			return base.ChainLink{}, fmt.Errorf("chain stage %d member %d: %w", i, j, err)
+		}
+		if o.noArchive {
+			return base.ChainLink{}, fmt.Errorf("chain stage %d member %d: WithDeadLetterDiscard would strand the group (no dead-letter left to re-run)", i, j)
+		}
+		if o.processAtAbsolute {
+			return base.ChainLink{}, fmt.Errorf("chain stage %d member %d: WithProcessAt cannot be used on a group member (its delay is relative; use WithProcessIn)", i, j)
+		}
+		payload, err := encodeArgs(m.args)
+		if err != nil {
+			return base.ChainLink{}, fmt.Errorf("chain stage %d member %d: %w", i, j, err)
+		}
+		var delay int64
+		if !o.processAt.IsZero() {
+			if d := time.Until(o.processAt); d > 0 {
+				delay = int64((d + time.Second/2) / time.Second)
+				if delay == 0 {
+					delay = 1
+				}
+			}
+		}
+		link.Group = append(link.Group, base.GroupMemberLink{
+			Kind:      m.args.Kind(),
+			Payload:   payload,
+			Queue:     o.queue,
+			MaxRetry:  o.maxRetry,
+			Retention: int64(o.retention / time.Second),
+			Delay:     delay,
+		})
+	}
+	return link, nil
 }
 
 // errNoArchiveMidChain: discarding a dead-lettered mid-link would delete the
