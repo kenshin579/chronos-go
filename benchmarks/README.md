@@ -44,6 +44,7 @@ cd benchmarks && go run ./cmd/soak -duration 4h   # before a major release
 ```
 
 The verdict trims the first 10% of samples as warmup, then compares
-first-half vs second-half means: heap may grow at most 1.2x, goroutines at
-most +10, `DBSIZE` at most 1.1x. Any violation on a run of 30 minutes or
-longer exits 1. Shorter runs always exit 0 (informational).
+first-half vs second-half means: heap may grow at most 1.2x (+32 MiB slack),
+goroutines at most +10, `DBSIZE` at most 1.1x (+50 keys slack). Any violation
+on a run of 30 minutes or longer exits 1. Shorter runs always exit 0
+(informational).

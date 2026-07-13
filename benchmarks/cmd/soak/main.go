@@ -81,6 +81,12 @@ func run(duration time.Duration, rate int, redisAddr string, db int, outPath, se
 		Queues:      map[string]int{"soak-a": 3, "soak-b": 1},
 		Concurrency: 16,
 		Logger:      logger,
+		// 소크 워크로드는 retained/archived를 분당 ~2.5천 개 만든다 — 기본
+		// janitor(1분 주기, 배치 100, retention 7d)로는 배수가 유입을 못 따라가
+		// DBSIZE가 선형 증가해 위양성 FAIL이 난다. 주기·retention을 좁혀
+		// 워밍업(첫 10%) 안에 정상상태(톱니)에 도달시킨다.
+		JanitorInterval:   time.Second,
+		ArchivedRetention: 5 * time.Minute,
 	})
 	if err := srv.Start(ctx, w.Mux()); err != nil {
 		return fmt.Errorf("server start: %w", err)
@@ -141,10 +147,20 @@ collect:
 		shutdownFailed = true
 	}
 
+	// 샘플링이 중간에 죽으면(예: Redis 다운으로 Collect 연속 실패) 부분 창으로
+	// PASS하거나 샘플 부족 exit 0이 될 수 있다 — 30분 이상 실행에서 기대 샘플
+	// 수의 80% 미만이면 FAIL.
+	expected := int(elapsed / sampleEvery)
+	coverageFailed := elapsed >= minReliable && len(samples) < expected*8/10
+
 	checks, usable := soak.Evaluate(samples)
 	fmt.Printf("\n=== soak verdict (%d samples over %s) ===\n", len(samples), elapsed.Round(time.Second))
 	if !usable {
 		fmt.Println("샘플 부족 — 판정 불가 (참고용 실행)")
+		if coverageFailed {
+			fmt.Printf("sampling coverage %d/%d — FAIL\n", len(samples), expected)
+			return fmt.Errorf("leak check failed")
+		}
 		return nil
 	}
 	failed := false
@@ -161,15 +177,19 @@ collect:
 	fmt.Printf("families(last): stream=%d retry=%d sched=%d arch=%d comp=%d uniq=%d grp=%d reg=%d\n",
 		last.Stream, last.Retry, last.Scheduled, last.Archived, last.Completed,
 		last.Unique, last.Groups, last.Schedules)
+	fmt.Printf("enqueued=%d (nominal %d)\n", w.Enqueued(), int64(rate)*int64(duration/time.Second))
 	if elapsed < minReliable {
 		fmt.Printf("⚠ 실행 시간 %s < %s — 판정 신뢰 불가, 참고용으로만 사용 (exit 0)\n",
 			elapsed.Round(time.Second), minReliable)
 		return nil
 	}
+	if coverageFailed {
+		fmt.Printf("sampling coverage %d/%d — FAIL\n", len(samples), expected)
+	}
 	if shutdownFailed {
 		fmt.Println("shutdown: FAIL (hang — goroutine leak signal)")
 	}
-	if failed || shutdownFailed {
+	if failed || shutdownFailed || coverageFailed {
 		return fmt.Errorf("leak check failed")
 	}
 	fmt.Println("✓ 누수 징후 없음")

@@ -2,6 +2,7 @@ package soak
 
 import (
 	"context"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -10,7 +11,11 @@ import (
 )
 
 func TestSamplerCollect(t *testing.T) {
-	rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:6379", DB: 15})
+	addr := os.Getenv("REDIS_ADDR")
+	if addr == "" {
+		addr = "127.0.0.1:6379"
+	}
+	rdb := redis.NewClient(&redis.Options{Addr: addr, DB: 15})
 	ctx := context.Background()
 	if err := rdb.Ping(ctx).Err(); err != nil {
 		t.Skipf("redis not available: %v", err)

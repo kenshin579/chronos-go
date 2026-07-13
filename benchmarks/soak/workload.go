@@ -107,7 +107,8 @@ type Workload struct {
 	client    *chronos.Client
 	insp      *chronos.Inspector
 	completed atomic.Int64
-	seenOnce  sync.Map // task ID → struct{}{} (fail-once 1회 실패 판정)
+	enqueued  atomic.Int64 // baseLoad enqueue 성공 수 (유효 rate 진단용)
+	seenOnce  sync.Map     // task ID → struct{}{} (fail-once 1회 실패 판정)
 	// 참고: recoverer 오회수로 fail-once가 이중 전달되면 completed가 논리 태스크
 	// 1개당 2회 집계될 수 있다(드묾, 맵은 결국 비워져 누수 없음). Throughput은
 	// 진단용이라 판정에는 영향 없다.
@@ -122,6 +123,11 @@ func NewWorkload(client *chronos.Client, insp *chronos.Inspector, cfg Config) *W
 
 // Completed returns the shared completion counter (for the Sampler).
 func (w *Workload) Completed() *atomic.Int64 { return &w.completed }
+
+// Enqueued reports how many baseLoad tasks were actually accepted — compared
+// against the nominal rate x duration it shows whether enqueue kept up.
+// Ticker specials (unique/chain/group) are excluded.
+func (w *Workload) Enqueued() int64 { return w.enqueued.Load() }
 
 var errSoakFail = errors.New("soak: deliberate failure")
 
@@ -216,9 +222,13 @@ func (w *Workload) enqueueOne(ctx context.Context, seq int) {
 	case varNormalRetained:
 		opts = append(opts, chronos.WithRetention(30*time.Second))
 	}
-	if _, err := chronos.Enqueue(ctx, w.client, args, opts...); err != nil && ctx.Err() == nil {
-		log.Printf("soak: enqueue seq=%d: %v", seq, err)
+	if _, err := chronos.Enqueue(ctx, w.client, args, opts...); err != nil {
+		if ctx.Err() == nil {
+			log.Printf("soak: enqueue seq=%d: %v", seq, err)
+		}
+		return
 	}
+	w.enqueued.Add(1)
 }
 
 // tickers drives the 10s specials: unique batch, chain, group.

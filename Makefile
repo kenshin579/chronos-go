@@ -32,7 +32,7 @@ bench:
 	cd benchmarks && go run ./cmd/bench -target chronos -scenario group
 
 bench-build:
-	cd benchmarks && go build ./... && go vet ./...
+	cd benchmarks && go build ./... && go vet ./... && go test ./soak/ -p 1
 
 vet:
 	go vet ./...
