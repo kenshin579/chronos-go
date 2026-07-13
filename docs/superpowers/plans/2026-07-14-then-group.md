@@ -822,13 +822,51 @@ func (s *Server) enqueueNextGroup(ctx context.Context, msg *base.TaskMessage, li
 			ChainIndex:         stageIdx,
 			PrevResult:         msg.Result, // 앞 스테이지 결과를 전 멤버에 복제
 		}
-		if _, err := s.rdb.EnqueueChainLink(ctx, member, time.Duration(m.Delay)*time.Second); err != nil {
+		created, err := s.rdb.EnqueueChainLink(ctx, member, time.Duration(m.Delay)*time.Second)
+		if err != nil {
 			return fmt.Errorf("stage member %s: %w", member.ID, err)
+		}
+		if !created {
+			// 멤버 hash가 이미 존재. in-flight면 스스로 보고하지만, 잔존
+			// completed(멤버 retention > 콜백 retention로 펜스가 먼저 사라진
+			// 재생성 경로)면 다시는 보고하지 않아 SET이 영원히 안 빈다 —
+			// CreateGroupIfAbsent의 드레인 계약대로 저장된 메시지(원래 결과
+			// 포함)로 완료를 재보고한다. 멱등: SREM no-op·create-if-absent.
+			if derr := s.drainCompletedStageMember(ctx, member.Queue, member.ID); derr != nil {
+				return fmt.Errorf("stage member %s drain: %w", member.ID, derr)
+			}
 		}
 	}
 	return nil
 }
+
+// drainCompletedStageMember re-reports a lingering completed member so the
+// stage's pending SET can empty. Skips members in any other state (they will
+// report themselves, or need a manual RunTask).
+func (s *Server) drainCompletedStageMember(ctx context.Context, qname, taskID string) error {
+	state, err := s.rdb.TaskState(ctx, qname, taskID)
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil // 방금 삭제됨 — 재보고 대상 아님(다음 재전달이 처리)
+		}
+		return err
+	}
+	if state != base.StateCompleted {
+		return nil
+	}
+	stored, err := s.rdb.GetTask(ctx, qname, taskID)
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil
+		}
+		return err
+	}
+	_, err = s.rdb.CompleteGroupMember(ctx, stored)
+	return err
+}
 ```
+
+(`errors`, `redis "github.com/redis/go-redis/v9"` import가 server.go에 없으면 추가. `rdb.TaskState`는 Task 2 리뷰 반영에서 추가된 헬퍼. `base.StateCompleted` 상수명은 internal/base 실제 정의에 맞출 것.)
 
 `GroupMembers`가 rdb에 없으면 `internal/rdb/group.go`에 추가:
 
@@ -1046,9 +1084,80 @@ func rdbCreateIfAbsentForTest(ctx context.Context, client redis.UniversalClient,
 
 (import에 `errors`, `strings`, `redis "github.com/redis/go-redis/v9"`, `"github.com/kenshin579/chronos-go/internal/rdb"` 추가. `internal/rdb`는 루트 패키지 테스트에서 import 가능.)
 
+- [ ] **Step 1b: 드레인 시나리오 테스트 추가** — 같은 파일에 추가. Task 4의 `drainCompletedStageMember` 검증: 멤버 retention > 콜백 retention로 펜스가 먼저 사라진 재생성 경로에서 잔존 completed 멤버가 드레인되어 스테이지가 정지하지 않는지. 같은 패키지라 서버 비공개 메서드를 직접 호출한다:
+
+```go
+// 펜스 소멸 후 재생성: 잔존 completed 멤버(재투입 no-op)를 드레인하면 SET이
+// 비고 콜백이 재점화된다. (멤버 retention 1분, 콜백 무retention)
+func TestThenGroup_DrainLingeringCompletedMember(t *testing.T) {
+	client := testutil.NewRedis(t)
+	ctx := context.Background()
+
+	var cbRuns atomic.Int64
+	mux := NewMux()
+	AddHandlerR(mux, func(ctx context.Context, task *Task[wfPrep]) (wfOut, error) {
+		return wfOut{V: "p"}, nil
+	})
+	AddHandlerR(mux, func(ctx context.Context, task *Task[wfEnc]) (wfOut, error) {
+		return wfOut{V: "e"}, nil
+	})
+	AddHandlerR(mux, func(ctx context.Context, task *Task[wfMerge]) (wfOut, error) {
+		cbRuns.Add(1)
+		return wfOut{V: "m"}, nil
+	})
+
+	srv := NewServer(client, ServerConfig{Queues: map[string]int{"wf": 1}, Concurrency: 4})
+	if err := srv.Start(ctx, mux); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	info, err := NewChain().
+		Then(wfPrep{}, WithQueue("wf")).
+		ThenGroup(NewGroup().
+			Add(wfEnc{Res: "x"}, WithQueue("wf"), WithRetention(time.Minute)).
+			OnComplete(wfMerge{}, WithQueue("wf"))).
+		Enqueue(ctx, NewClient(client))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for cbRuns.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if cbRuns.Load() == 0 {
+		t.Fatal("stage never completed")
+	}
+	time.Sleep(500 * time.Millisecond) // 콜백(무retention) hash 삭제 대기
+
+	// 선행 재전달의 스테이지 재생성을 재현: 펜스·SET 모두 없음 → Created.
+	chainID := strings.TrimSuffix(info.ID, ":0")
+	groupID := chainID + ":1"
+	memberID := groupID + ":m0"
+	r := rdb.NewRDB(client)
+	st, err := r.CreateGroupIfAbsent(ctx, "wf", groupID, []string{memberID}, groupID+":cb")
+	if err != nil || st != rdb.GroupStageCreated {
+		t.Fatalf("recreate: st=%v err=%v", st, err)
+	}
+	// 잔존 completed 멤버는 create-if-absent에 걸린다 — 드레인 경로 직접 호출.
+	if err := srv.drainCompletedStageMember(ctx, "wf", memberID); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	// SET이 비어 삭제되고 콜백 hash가 재생성됐는지.
+	if n, _ := client.Exists(ctx, base.GroupKey("wf", groupID)).Result(); n != 0 {
+		t.Error("pending set must be drained away")
+	}
+	if n, _ := client.Exists(ctx, base.TaskKey("wf", groupID+":cb")).Result(); n != 1 {
+		t.Error("callback must be re-fired by the drained report")
+	}
+}
+```
+
+(import에 `strings`, `"github.com/kenshin579/chronos-go/internal/base"`, `"github.com/kenshin579/chronos-go/internal/rdb"` 확인 — Task 5의 다른 테스트와 공유. 콜백 2회 실행은 기존 at-least-once caveat로 허용.)
+
 - [ ] **Step 2: 실행·통과 확인**
 
-Run: `go test -p 1 -count=1 -run 'TestThenGroup_Member|TestThenGroup_Redelivery' .`
+Run: `go test -p 1 -count=1 -run 'TestThenGroup_Member|TestThenGroup_Redelivery|TestThenGroup_Recreated' .`
 Expected: PASS 2건 (Task 4 구현이 이미 있으므로 이 태스크는 시나리오 검증 — 실패하면 구현 결함이니 수정)
 
 - [ ] **Step 3: 커밋**
