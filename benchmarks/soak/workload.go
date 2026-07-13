@@ -108,9 +108,15 @@ type Workload struct {
 	insp      *chronos.Inspector
 	completed atomic.Int64
 	seenOnce  sync.Map // task ID → struct{}{} (fail-once 1회 실패 판정)
+	// 참고: recoverer 오회수로 fail-once가 이중 전달되면 completed가 논리 태스크
+	// 1개당 2회 집계될 수 있다(드묾, 맵은 결국 비워져 누수 없음). Throughput은
+	// 진단용이라 판정에는 영향 없다.
 }
 
 func NewWorkload(client *chronos.Client, insp *chronos.Inspector, cfg Config) *Workload {
+	if cfg.Rate < 1 {
+		cfg.Rate = 1 // 0 나눗셈·NewTicker 패닉 방지 (최소 1 task/s)
+	}
 	return &Workload{cfg: cfg, client: client, insp: insp}
 }
 
@@ -275,7 +281,12 @@ func (w *Workload) pauseToggler(ctx context.Context) {
 				return
 			case <-time.After(30 * time.Second):
 			}
-			if err := w.insp.ResumeQueue(ctx, "soak-b"); err != nil && ctx.Err() == nil {
+			if err := w.insp.ResumeQueue(ctx, "soak-b"); err != nil {
+				if ctx.Err() != nil {
+					// 종료와 겹침 — paused로 남기지 않는다(배수 후 판정 안정).
+					_ = w.insp.ResumeQueue(context.WithoutCancel(ctx), "soak-b")
+					return
+				}
 				log.Printf("soak: resume: %v", err)
 			}
 		}

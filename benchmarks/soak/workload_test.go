@@ -22,6 +22,18 @@ func TestPickVariantDistribution(t *testing.T) {
 	}
 }
 
+func TestNewWorkloadClampsRate(t *testing.T) {
+	for _, rate := range []int{0, -5} {
+		w := NewWorkload(nil, nil, Config{Rate: rate})
+		if w.cfg.Rate != 1 {
+			t.Errorf("Rate=%d: got cfg.Rate=%d, want 1 (클램프)", rate, w.cfg.Rate)
+		}
+	}
+	if w := NewWorkload(nil, nil, Config{Rate: 50}); w.cfg.Rate != 50 {
+		t.Errorf("Rate=50: got cfg.Rate=%d, want 50 (그대로 유지)", w.cfg.Rate)
+	}
+}
+
 func TestVariantQueueSplit(t *testing.T) {
 	a, b := 0, 0
 	for seq := 0; seq < 1000; seq++ {
