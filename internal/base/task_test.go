@@ -188,7 +188,7 @@ func TestMessageResultFieldsRoundTrip(t *testing.T) {
 	}
 	// 빈 필드는 직렬화에서 생략(기존 메시지와 하위호환).
 	empty, _ := EncodeMessage(&TaskMessage{ID: "t2", Kind: "k", Queue: "q"})
-	for _, field := range []string{"result", "prev_result", "group_results", "group_index", "group_size"} {
+	for _, field := range []string{"result", "prev_result", "group_results", "group_size"} {
 		if strings.Contains(string(empty), `"`+field+`"`) {
 			t.Errorf("empty message must omit %q", field)
 		}

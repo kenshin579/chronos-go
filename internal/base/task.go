@@ -114,7 +114,7 @@ type TaskMessage struct {
 	// group completes; nil when no member produced a result.
 	GroupResults [][]byte `json:"group_results,omitempty"`
 	// GroupIndex is this member's position in its group (Add order, 0-based).
-	GroupIndex int `json:"group_index,omitempty"`
+	GroupIndex int `json:"group_index"`
 	// GroupSize is the group's member count, carried by every member so the
 	// completion script can assemble GroupResults in order.
 	GroupSize int `json:"group_size,omitempty"`
