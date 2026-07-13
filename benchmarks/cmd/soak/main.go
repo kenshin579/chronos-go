@@ -56,12 +56,6 @@ func run(duration time.Duration, rate int, redisAddr string, db int, outPath str
 		return fmt.Errorf("flushdb: %w", err)
 	}
 
-	jsonl, err := os.Create(outPath)
-	if err != nil {
-		return fmt.Errorf("create %s: %w", outPath, err)
-	}
-	defer jsonl.Close()
-
 	client := chronos.NewClient(rdb)
 	insp := chronos.NewInspector(rdb)
 	w := soak.NewWorkload(client, insp, soak.Config{Rate: rate})
@@ -81,6 +75,12 @@ func run(duration time.Duration, rate int, redisAddr string, db int, outPath str
 	if err := sched.Start(ctx); err != nil {
 		return fmt.Errorf("scheduler start: %w", err)
 	}
+
+	jsonl, err := os.Create(outPath)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", outPath, err)
+	}
+	defer jsonl.Close()
 
 	loadCtx, cancelLoad := context.WithTimeout(ctx, duration)
 	defer cancelLoad()
@@ -113,13 +113,22 @@ collect:
 		}
 	}
 
+	elapsed := time.Since(started)
+	stop() // 시그널 등록 해제 — 셧다운 중 2차 Ctrl-C가 기본 동작으로 동작하도록
+
 	<-loadDone
+	shutdownFailed := false
 	shutCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_ = sched.Shutdown(shutCtx)
-	_ = srv.Shutdown(shutCtx)
+	if err := sched.Shutdown(shutCtx); err != nil {
+		fmt.Fprintln(os.Stderr, "soak: scheduler shutdown:", err)
+		shutdownFailed = true
+	}
+	if err := srv.Shutdown(shutCtx); err != nil {
+		fmt.Fprintln(os.Stderr, "soak: server shutdown:", err)
+		shutdownFailed = true
+	}
 
-	elapsed := time.Since(started)
 	checks, usable := soak.Evaluate(samples)
 	fmt.Printf("\n=== soak verdict (%d samples over %s) ===\n", len(samples), elapsed.Round(time.Second))
 	if !usable {
@@ -145,7 +154,10 @@ collect:
 			elapsed.Round(time.Second), minReliable)
 		return nil
 	}
-	if failed {
+	if shutdownFailed {
+		fmt.Println("shutdown: FAIL (hang — goroutine leak signal)")
+	}
+	if failed || shutdownFailed {
 		return fmt.Errorf("leak check failed")
 	}
 	fmt.Println("✓ 누수 징후 없음")
