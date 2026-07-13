@@ -232,6 +232,10 @@ dead-letter re-runs. A result's JSON form is capped at 1 MiB
 (`MaxResultSize`); larger results dead-letter the task without retry, so pass
 a reference (object-store path, row ID) for big artifacts.
 
+Each chain link receives only its *immediate* predecessor's result: an
+intermediate link registered with plain `AddHandler` (no result) breaks the
+relay, so the link after it gets `ErrNoResult` from `PrevResult`.
+
 ## Scheduling (interval & cron)
 
 Register periodic jobs on a `Scheduler`. Every instance may call `Start`; only
