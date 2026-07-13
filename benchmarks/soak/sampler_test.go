@@ -13,7 +13,7 @@ func TestSamplerCollect(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:6379", DB: 15})
 	ctx := context.Background()
 	if err := rdb.Ping(ctx).Err(); err != nil {
-		t.Fatalf("redis required at 127.0.0.1:6379: %v", err)
+		t.Skipf("redis not available: %v", err)
 	}
 	t.Cleanup(func() { rdb.FlushDB(ctx); rdb.Close() })
 	rdb.FlushDB(ctx)

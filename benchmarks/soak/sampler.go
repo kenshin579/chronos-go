@@ -41,7 +41,6 @@ func (s *Sampler) Collect(ctx context.Context) (Sample, error) {
 	if dt := now.Sub(s.prevAt).Seconds(); dt > 0 {
 		tput = float64(done-s.prevDone) / dt
 	}
-	s.prevDone, s.prevAt = done, now
 
 	out := Sample{
 		ElapsedSec: now.Sub(s.start).Seconds(),
@@ -74,30 +73,32 @@ func (s *Sampler) Collect(ctx context.Context) (Sample, error) {
 			}
 			*fam.dst += n
 		}
-		if out.Unique, err = addScanCount(ctx, s.rdb, p+"unique:*", out.Unique); err != nil {
-			return out, err
-		}
-		if out.Groups, err = addScanCount(ctx, s.rdb, p+"group:*", out.Groups); err != nil {
-			return out, err
-		}
+	}
+	if out.Unique, err = scanCount(ctx, s.rdb, "chronos:*:unique:*"); err != nil {
+		return out, err
+	}
+	if out.Groups, err = scanCount(ctx, s.rdb, "chronos:*:group:*"); err != nil {
+		return out, err
 	}
 	if out.Schedules, err = s.rdb.HLen(ctx, "chronos:schedules").Result(); err != nil {
 		return out, fmt.Errorf("hlen schedules: %w", err)
 	}
+	s.prevDone, s.prevAt = done, now
 	return out, nil
 }
 
-// addScanCount adds the number of keys matching pattern to acc.
-func addScanCount(ctx context.Context, rdb redis.UniversalClient, pattern string, acc int64) (int64, error) {
+// scanCount returns the number of keys matching pattern.
+func scanCount(ctx context.Context, rdb redis.UniversalClient, pattern string) (int64, error) {
+	var count int64
 	var cursor uint64
 	for {
-		keys, next, err := rdb.Scan(ctx, cursor, pattern, 500).Result()
+		keys, next, err := rdb.Scan(ctx, cursor, pattern, 1000).Result()
 		if err != nil {
-			return acc, fmt.Errorf("scan %s: %w", pattern, err)
+			return count, fmt.Errorf("scan %s: %w", pattern, err)
 		}
-		acc += int64(len(keys))
+		count += int64(len(keys))
 		if next == 0 {
-			return acc, nil
+			return count, nil
 		}
 		cursor = next
 	}
