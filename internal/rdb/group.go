@@ -2,6 +2,7 @@ package rdb
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"time"
 
@@ -23,25 +24,56 @@ const GroupTTL = 7 * 24 * time.Hour
 // a truly abandoned one does. A missing SET means the group already completed
 // or expired — the call is then a no-op, which makes redelivered member reports
 // safe. All keys share the callback queue's hash tag (cluster-safe).
+// The member's result (base64) is stored in the result HASH (KEYS[4]) under
+// its member index; when the last member completes, the results are embedded
+// into the callback message's group_results field (base64 strings — matching
+// Go's []byte JSON encoding) via cjson before the callback is created, and
+// both the pending SET and the result HASH are deleted. cjson round-trips the
+// message JSON: all numeric fields are unix seconds / small ints (< 2^53),
+// and every slice field is omitempty (no empty-array-to-{} hazard). The
+// member-count guard (ARGV[10] > 0) keeps legacy in-flight members (encoded
+// before GroupSize existed) on the old no-results path — and avoids cjson
+// encoding an empty Lua table as {} into a slice field.
 // KEYS[1] group set, KEYS[2] callback task hash, KEYS[3] callback stream or
-// scheduled zset.
+// scheduled zset, KEYS[4] group result hash.
 // ARGV[1] member id, ARGV[2] callback encoded msg, ARGV[3] callback state,
 // ARGV[4] callback id, ARGV[5] mode ("stream"|"zset"), ARGV[6] score (zset),
-// ARGV[7] group TTL in seconds (refresh).
+// ARGV[7] group TTL in seconds, ARGV[8] member result base64 ("" = none),
+// ARGV[9] member index, ARGV[10] member count.
 var groupCompleteCmd = redis.NewScript(`
 if redis.call("EXISTS", KEYS[1]) == 0 then
   return 0
 end
 redis.call("SREM", KEYS[1], ARGV[1])
+if ARGV[8] ~= "" then
+  redis.call("HSET", KEYS[4], ARGV[9], ARGV[8])
+  redis.call("EXPIRE", KEYS[4], ARGV[7])
+end
 if redis.call("SCARD", KEYS[1]) > 0 then
   redis.call("EXPIRE", KEYS[1], ARGV[7])
   return 0
 end
-redis.call("DEL", KEYS[1])
+local cb = ARGV[2]
+if redis.call("EXISTS", KEYS[4]) == 1 and tonumber(ARGV[10]) > 0 then
+  local msg = cjson.decode(cb)
+  local results = {}
+  local n = tonumber(ARGV[10])
+  for i = 0, n - 1 do
+    local v = redis.call("HGET", KEYS[4], tostring(i))
+    if v then
+      results[i + 1] = v
+    else
+      results[i + 1] = cjson.null
+    end
+  end
+  msg["group_results"] = results
+  cb = cjson.encode(msg)
+end
+redis.call("DEL", KEYS[1], KEYS[4])
 if redis.call("EXISTS", KEYS[2]) == 1 then
   return 0
 end
-redis.call("HSET", KEYS[2], "msg", ARGV[2], "state", ARGV[3])
+redis.call("HSET", KEYS[2], "msg", cb, "state", ARGV[3])
 if ARGV[5] == "stream" then
   redis.call("XADD", KEYS[3], "*", "task_id", ARGV[4])
 else
@@ -122,8 +154,14 @@ func (r *RDB) CompleteGroupMember(ctx context.Context, member *base.TaskMessage)
 		base.GroupKey(member.GroupQueue, member.GroupID),
 		base.TaskKey(cb.Queue, cb.ID),
 		destKey,
+		base.GroupResultKey(member.GroupQueue, member.GroupID),
 	}
-	argv := []interface{}{member.ID, encoded, int(state), cb.ID, mode, score, int(GroupTTL / time.Second)}
+	resultB64 := ""
+	if len(member.Result) > 0 {
+		resultB64 = base64.StdEncoding.EncodeToString(member.Result)
+	}
+	argv := []interface{}{member.ID, encoded, int(state), cb.ID, mode, score,
+		int(GroupTTL / time.Second), resultB64, member.GroupIndex, member.GroupSize}
 	n, err := groupCompleteCmd.Run(ctx, r.client, keys, argv...).Int()
 	if err != nil {
 		return false, err
