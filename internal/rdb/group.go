@@ -252,6 +252,11 @@ func (r *RDB) CompleteGroupMember(ctx context.Context, member *base.TaskMessage)
 	return n == 1, nil
 }
 
+// GroupMembers lists the group's still-pending member IDs.
+func (r *RDB) GroupMembers(ctx context.Context, cbQueue, groupID string) ([]string, error) {
+	return r.client.SMembers(ctx, base.GroupKey(cbQueue, groupID)).Result()
+}
+
 // GroupPending returns how many members of the group have not yet succeeded
 // (0 when the group finished or its state expired).
 func (r *RDB) GroupPending(ctx context.Context, cbQueue, groupID string) (int64, error) {

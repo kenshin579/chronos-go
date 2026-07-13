@@ -574,6 +574,9 @@ func (s *Server) completeGroupWithRetry(ctx context.Context, msg *base.TaskMessa
 // create-if-absent script mean a redelivered predecessor cannot duplicate it.
 func (s *Server) enqueueNext(ctx context.Context, msg *base.TaskMessage) error {
 	link := msg.Chain[0]
+	if len(link.Group) > 0 {
+		return s.enqueueNextGroup(ctx, msg, link)
+	}
 	next := &base.TaskMessage{
 		ID:         fmt.Sprintf("%s:%d", msg.ChainID, msg.ChainIndex+1),
 		Kind:       link.Kind,
@@ -595,6 +598,112 @@ func (s *Server) enqueueNext(ctx context.Context, msg *base.TaskMessage) error {
 		s.logger.Debug("chronos: chain successor already exists (redelivery)", "id", next.ID)
 	}
 	return nil
+}
+
+// enqueueNextGroup materializes a parallel stage: the pending-member SET
+// (guarded by the callback-hash fence against redelivery of a completed
+// stage), then every member via the usual create-if-absent link enqueue.
+// Members that already left the pending SET (completed while a partially
+// failed attempt is being retried) are skipped so their work is not redone;
+// the SISMEMBER check and the enqueue are not atomic, so a member finishing
+// in between can still be recreated — the standard at-least-once caveat.
+func (s *Server) enqueueNextGroup(ctx context.Context, msg *base.TaskMessage, link base.ChainLink) error {
+	stageIdx := msg.ChainIndex + 1
+	groupID := fmt.Sprintf("%s:%d", msg.ChainID, stageIdx)
+	cbTaskID := groupID + ":cb"
+	memberIDs := make([]string, len(link.Group))
+	for j := range link.Group {
+		memberIDs[j] = fmt.Sprintf("%s:m%d", groupID, j)
+	}
+
+	state, err := s.rdb.CreateGroupIfAbsent(ctx, link.Queue, groupID, memberIDs, cbTaskID)
+	if err != nil {
+		return err
+	}
+	if state == rdb.GroupStageDone {
+		return nil // 재전달 — 스테이지는 이미 완료됨
+	}
+	var pendingSet map[string]bool
+	if state == rdb.GroupStageExists {
+		// 부분 실패 재시도: 이미 완료돼 SET을 떠난 멤버는 재생성하지 않는다.
+		ids, err := s.rdb.GroupMembers(ctx, link.Queue, groupID)
+		if err != nil {
+			return err
+		}
+		pendingSet = make(map[string]bool, len(ids))
+		for _, id := range ids {
+			pendingSet[id] = true
+		}
+	}
+
+	// 콜백 스냅샷(멤버들이 실어 나름): link의 단일 태스크 필드가 콜백을 서술.
+	cbLink := base.ChainLink{
+		Kind: link.Kind, Payload: link.Payload, Queue: link.Queue,
+		MaxRetry: link.MaxRetry, NoArchive: link.NoArchive,
+		Retention: link.Retention, Delay: link.Delay,
+	}
+	for j, m := range link.Group {
+		if pendingSet != nil && !pendingSet[memberIDs[j]] {
+			continue
+		}
+		member := &base.TaskMessage{
+			ID:                 memberIDs[j],
+			Kind:               m.Kind,
+			Payload:            m.Payload,
+			Queue:              m.Queue,
+			MaxRetry:           m.MaxRetry,
+			Retention:          m.Retention,
+			GroupID:            groupID,
+			GroupQueue:         link.Queue,
+			GroupCallback:      &cbLink,
+			GroupIndex:         j,
+			GroupSize:          len(link.Group),
+			GroupCallbackChain: msg.Chain[1:],
+			ChainID:            msg.ChainID,
+			ChainIndex:         stageIdx,
+			PrevResult:         msg.Result, // 앞 스테이지 결과를 전 멤버에 복제
+		}
+		created, err := s.rdb.EnqueueChainLink(ctx, member, time.Duration(m.Delay)*time.Second)
+		if err != nil {
+			return fmt.Errorf("stage member %s: %w", member.ID, err)
+		}
+		if !created {
+			// 멤버 hash가 이미 존재. in-flight면 스스로 보고하지만, 잔존
+			// completed(멤버 retention > 콜백 retention로 펜스가 먼저 사라진
+			// 재생성 경로)면 다시는 보고하지 않아 SET이 영원히 안 빈다 —
+			// CreateGroupIfAbsent의 드레인 계약대로 저장된 메시지(원래 결과
+			// 포함)로 완료를 재보고한다. 멱등: SREM no-op·create-if-absent.
+			if derr := s.drainCompletedStageMember(ctx, member.Queue, member.ID); derr != nil {
+				return fmt.Errorf("stage member %s drain: %w", member.ID, derr)
+			}
+		}
+	}
+	return nil
+}
+
+// drainCompletedStageMember re-reports a lingering completed member so the
+// stage's pending SET can empty. Skips members in any other state (they will
+// report themselves, or need a manual RunTask).
+func (s *Server) drainCompletedStageMember(ctx context.Context, qname, taskID string) error {
+	state, err := s.rdb.TaskState(ctx, qname, taskID)
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil // 방금 삭제됨 — 재보고 대상 아님(다음 재전달이 처리)
+		}
+		return err
+	}
+	if state != base.StateCompleted {
+		return nil
+	}
+	stored, err := s.rdb.GetTask(ctx, qname, taskID)
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil
+		}
+		return err
+	}
+	_, err = s.rdb.CompleteGroupMember(ctx, stored)
+	return err
 }
 
 func (s *Server) trackInflight(id string, e inflightEntry) {
