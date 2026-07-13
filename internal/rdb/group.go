@@ -107,6 +107,61 @@ func (r *RDB) CreateGroup(ctx context.Context, cbQueue, groupID string, memberID
 	return err
 }
 
+// GroupStageState reports what CreateGroupIfAbsent found.
+type GroupStageState int
+
+const (
+	// GroupStageDone: the stage's callback task already exists — the group
+	// completed; nothing must be (re)created.
+	GroupStageDone GroupStageState = iota
+	// GroupStageExists: the pending SET already exists (redelivery while the
+	// stage is in flight); members may still need create-if-absent enqueues.
+	GroupStageExists
+	// GroupStageCreated: the pending SET was created by this call.
+	GroupStageCreated
+)
+
+// createGroupIfAbsentCmd guards a chain group stage against predecessor
+// redelivery: an existing callback hash fences a completed stage, an existing
+// SET means the stage is in flight. Both keys share the callback queue's hash
+// slot. KEYS[1] pending SET, KEYS[2] callback task hash.
+// ARGV[1] TTL seconds, ARGV[2..] member IDs.
+var createGroupIfAbsentCmd = redis.NewScript(`
+if redis.call("EXISTS", KEYS[2]) == 1 then
+  return 0
+end
+if redis.call("EXISTS", KEYS[1]) == 1 then
+  redis.call("EXPIRE", KEYS[1], ARGV[1])
+  return 1
+end
+for i = 2, #ARGV do
+  redis.call("SADD", KEYS[1], ARGV[i])
+end
+redis.call("EXPIRE", KEYS[1], ARGV[1])
+return 2
+`)
+
+// CreateGroupIfAbsent registers a chain stage's pending members exactly once.
+// Unlike CreateGroup (unconditional, for standalone groups with fresh UUIDs),
+// chain stages have deterministic IDs and may be re-attempted by a redelivered
+// predecessor — completed stages must not be resurrected.
+func (r *RDB) CreateGroupIfAbsent(ctx context.Context, cbQueue, groupID string, memberIDs []string, cbTaskID string) (GroupStageState, error) {
+	if len(memberIDs) == 0 {
+		return GroupStageDone, errors.New("chronos: group needs at least one member")
+	}
+	keys := []string{base.GroupKey(cbQueue, groupID), base.TaskKey(cbQueue, cbTaskID)}
+	argv := make([]interface{}, 0, len(memberIDs)+1)
+	argv = append(argv, int(GroupTTL/time.Second))
+	for _, id := range memberIDs {
+		argv = append(argv, id)
+	}
+	n, err := createGroupIfAbsentCmd.Run(ctx, r.client, keys, argv...).Int()
+	if err != nil {
+		return GroupStageDone, err
+	}
+	return GroupStageState(n), nil
+}
+
 // CompleteGroupMember reports a member's success. When it was the last pending
 // member it atomically creates the group's callback task and returns true.
 // Idempotent under at-least-once redelivery (SREM of an absent member and a
@@ -130,6 +185,13 @@ func (r *RDB) CompleteGroupMember(ctx context.Context, member *base.TaskMessage)
 		MaxRetry:  link.MaxRetry,
 		NoArchive: link.NoArchive,
 		Retention: link.Retention,
+	}
+	// A chain-embedded stage's callback inherits the chain tail so the chain
+	// continues after the fan-in.
+	if len(member.GroupCallbackChain) > 0 {
+		cb.Chain = member.GroupCallbackChain
+		cb.ChainID = member.ChainID
+		cb.ChainIndex = member.ChainIndex
 	}
 
 	// Register the callback queue in the global index up front (separate
