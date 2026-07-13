@@ -209,3 +209,46 @@ func TestGlobalKeys(t *testing.T) {
 		t.Errorf("SchedulesKey = %q", SchedulesKey())
 	}
 }
+
+func TestGroupStageLinkRoundTrip(t *testing.T) {
+	in := &TaskMessage{
+		ID: "c1:0", Kind: "k", Queue: "q", ChainID: "c1",
+		Chain: []ChainLink{
+			{ // 그룹 스테이지: 단일 필드는 콜백을 서술, Group은 멤버 목록
+				Kind: "wf:merge", Payload: []byte(`{}`), Queue: "cbq", MaxRetry: 2,
+				Group: []GroupMemberLink{
+					{Kind: "wf:enc", Payload: []byte(`{"r":"720p"}`), Queue: "enc", MaxRetry: 1},
+					{Kind: "wf:enc", Payload: []byte(`{"r":"4k"}`), Queue: "enc", Delay: 3},
+				},
+			},
+			{Kind: "wf:deploy", Payload: []byte(`{}`), Queue: "q"}, // 단일 스테이지
+		},
+		GroupCallbackChain: []ChainLink{{Kind: "wf:deploy", Payload: []byte(`{}`), Queue: "q"}},
+	}
+	b, err := EncodeMessage(in)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	out, err := DecodeMessage(b)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	g := out.Chain[0].Group
+	if len(g) != 2 || g[0].Kind != "wf:enc" || string(g[1].Payload) != `{"r":"4k"}` || g[1].Delay != 3 {
+		t.Errorf("group members lost: %+v", g)
+	}
+	if out.Chain[0].Kind != "wf:merge" || len(out.Chain[1].Group) != 0 {
+		t.Errorf("stage shape wrong: %+v", out.Chain)
+	}
+	if len(out.GroupCallbackChain) != 1 || out.GroupCallbackChain[0].Kind != "wf:deploy" {
+		t.Errorf("callback chain lost: %+v", out.GroupCallbackChain)
+	}
+	// 단일 스테이지 링크·빈 메시지는 신규 필드를 생략(하위호환).
+	single, _ := EncodeMessage(&TaskMessage{ID: "t", Kind: "k", Queue: "q",
+		Chain: []ChainLink{{Kind: "a", Queue: "q"}}})
+	for _, field := range []string{`"group"`, `"group_cb_chain"`} {
+		if strings.Contains(string(single), field) {
+			t.Errorf("single-stage message must omit %s", field)
+		}
+	}
+}
