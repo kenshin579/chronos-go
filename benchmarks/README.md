@@ -34,7 +34,8 @@ yourself, and asynq configuration improvements are welcome.
 tasks, unique dedup, retention, chains, groups, an interval schedule and
 periodic queue pause/resume — for hours against a local Redis, sampling
 heap (after GC), goroutine count, `DBSIZE` and per-family key counts every
-30s (stdout + JSONL).
+30s (stdout + JSONL). chronos operational logs go to `-serverlog` (default
+`soak-server.log`) so deliberate failures don't drown the sample lines.
 
 ```bash
 make soak          # 1 hour (from the repo root)

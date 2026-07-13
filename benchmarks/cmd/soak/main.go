@@ -12,6 +12,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -34,15 +35,16 @@ func main() {
 	redisAddr := flag.String("redis", "127.0.0.1:6379", "Redis address")
 	db := flag.Int("db", 15, "Redis DB (FLUSHED at start — use a dedicated DB)")
 	out := flag.String("out", "soak.jsonl", "JSONL sample log path")
+	serverLog := flag.String("serverlog", "soak-server.log", "chronos server/scheduler log path (deliberate failures are logged per task — kept out of the terminal)")
 	flag.Parse()
 
-	if err := run(*duration, *rate, *redisAddr, *db, *out); err != nil {
+	if err := run(*duration, *rate, *redisAddr, *db, *out, *serverLog); err != nil {
 		fmt.Fprintln(os.Stderr, "soak:", err)
 		os.Exit(1)
 	}
 }
 
-func run(duration time.Duration, rate int, redisAddr string, db int, outPath string) error {
+func run(duration time.Duration, rate int, redisAddr string, db int, outPath, serverLogPath string) error {
 	rdb := redis.NewClient(&redis.Options{Addr: redisAddr, DB: db})
 	defer rdb.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -60,15 +62,31 @@ func run(duration time.Duration, rate int, redisAddr string, db int, outPath str
 	insp := chronos.NewInspector(rdb)
 	w := soak.NewWorkload(client, insp, soak.Config{Rate: rate})
 
+	jsonl, err := os.Create(outPath)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", outPath, err)
+	}
+	defer jsonl.Close()
+
+	// 의도적 실패(dead-letter/discard/fail-once)가 태스크마다 ERROR 로그를
+	// 남기므로, 서버/스케줄러 운영 로그는 터미널 대신 파일로 보낸다.
+	logFile, err := os.Create(serverLogPath)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", serverLogPath, err)
+	}
+	defer logFile.Close()
+	logger := slog.New(slog.NewTextHandler(logFile, nil))
+
 	srv := chronos.NewServer(rdb, chronos.ServerConfig{
 		Queues:      map[string]int{"soak-a": 3, "soak-b": 1},
 		Concurrency: 16,
+		Logger:      logger,
 	})
 	if err := srv.Start(ctx, w.Mux()); err != nil {
 		return fmt.Errorf("server start: %w", err)
 	}
 
-	sched := chronos.NewScheduler(rdb, chronos.SchedulerConfig{})
+	sched := chronos.NewScheduler(rdb, chronos.SchedulerConfig{Logger: logger})
 	if err := chronos.RegisterInterval(sched, time.Second, soak.SchedArgs(), chronos.WithQueue("soak-a")); err != nil {
 		return fmt.Errorf("register schedule: %w", err)
 	}
@@ -76,18 +94,12 @@ func run(duration time.Duration, rate int, redisAddr string, db int, outPath str
 		return fmt.Errorf("scheduler start: %w", err)
 	}
 
-	jsonl, err := os.Create(outPath)
-	if err != nil {
-		return fmt.Errorf("create %s: %w", outPath, err)
-	}
-	defer jsonl.Close()
-
 	loadCtx, cancelLoad := context.WithTimeout(ctx, duration)
 	defer cancelLoad()
 	loadDone := make(chan struct{})
 	go func() { defer close(loadDone); w.Run(loadCtx) }()
 
-	fmt.Printf("soak: duration=%s rate=%d/s queues=soak-a(3):soak-b(1) out=%s\n", duration, rate, outPath)
+	fmt.Printf("soak: duration=%s rate=%d/s queues=soak-a(3):soak-b(1) out=%s serverlog=%s\n", duration, rate, outPath, serverLogPath)
 	sampler := soak.NewSampler(rdb, []string{"soak-a", "soak-b"}, w.Completed())
 	var samples []soak.Sample
 	started := time.Now()
