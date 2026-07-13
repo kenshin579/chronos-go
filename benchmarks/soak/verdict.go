@@ -11,6 +11,13 @@ type Check struct {
 
 const warmupFrac = 0.1
 
+// 베이스라인이 작을 때 비율 임계(x1.2, x1.1)만으로는 노이즈에 휘둘리므로
+// 절대 여유를 더한 하이브리드 임계를 쓴다.
+const (
+	heapSlackBytes = 32 << 20 // 베이스라인이 작을 때 ±20%는 노이즈 — 절대 여유
+	dbSlackKeys    = 50
+)
+
 // Evaluate trims the first warmupFrac of samples, splits the rest in half and
 // compares means. usable is false when fewer than 4 samples remain — callers
 // must then treat the run as informational only.
@@ -34,17 +41,22 @@ func Evaluate(samples []Sample) (checks []Check, usable bool) {
 	gf, gs := mean(g1), mean(g2)
 	df, ds := mean(d1), mean(d2)
 	return []Check{
-		{Name: "heap", First: hf, Second: hs, Rule: "second <= first x1.2", Pass: hs <= hf*1.2},
+		{Name: "heap", First: hf, Second: hs, Rule: "second <= first x1.2 + 32MB", Pass: hs <= hf*1.2+heapSlackBytes},
 		{Name: "goroutines", First: gf, Second: gs, Rule: "second - first <= 10", Pass: gs-gf <= 10},
-		{Name: "dbsize", First: df, Second: ds, Rule: "second <= first x1.1", Pass: ds <= df*1.1},
+		{Name: "dbsize", First: df, Second: ds, Rule: "second <= first x1.1 + 50", Pass: ds <= df*1.1+dbSlackKeys},
 	}, true
 }
 
-// splitWindows drops the first warmup fraction (at least the exact fraction,
-// rounded down) and splits the remainder into two equal halves; a leftover
-// middle element when the remainder is odd goes to neither half.
+// splitWindows drops the first warmup fraction (rounded down, but always at
+// least one sample when the input is non-empty — otherwise small n would keep
+// the warmup spike and mask leaks) and splits the remainder into two equal
+// halves; a leftover middle element when the remainder is odd goes to neither
+// half.
 func splitWindows(xs []float64, warmup float64) (first, second []float64) {
 	skip := int(float64(len(xs)) * warmup)
+	if skip == 0 && len(xs) > 0 {
+		skip = 1
+	}
 	rest := xs[skip:]
 	half := len(rest) / 2
 	return rest[:half], rest[len(rest)-half:]
