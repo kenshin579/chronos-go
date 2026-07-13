@@ -2,6 +2,8 @@ package rdb
 
 import (
 	"context"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -128,6 +130,137 @@ func TestGroup_ReportRefreshesTTL(t *testing.T) {
 	}
 	if ttl <= time.Minute {
 		t.Errorf("ttl = %v, want refreshed to ~%v", ttl, GroupTTL)
+	}
+}
+
+// 멤버 3(결과 2, 무결과 1) 그룹: 결과가 인덱스 순서로 콜백 메시지에 내장되고
+// groupresult HASH가 삭제되는지 확인.
+func TestCompleteGroupMember_CollectsResults(t *testing.T) {
+	client := testutil.NewRedis(t)
+	r := NewRDB(client)
+	ctx := context.Background()
+
+	cb := &base.ChainLink{Kind: "g:cb", Payload: []byte(`{}`), Queue: "gq"}
+	mk := func(i int, result []byte) *base.TaskMessage {
+		return &base.TaskMessage{
+			ID: "g1:m" + strconv.Itoa(i), Kind: "g:m", Queue: "gq",
+			GroupID: "g1", GroupQueue: "gq", GroupCallback: cb,
+			GroupIndex: i, GroupSize: 3, Result: result,
+		}
+	}
+	if err := r.CreateGroup(ctx, "gq", "g1", []string{"g1:m0", "g1:m1", "g1:m2"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if fired, err := r.CompleteGroupMember(ctx, mk(0, []byte(`{"v":0}`))); err != nil || fired {
+		t.Fatalf("m0: fired=%v err=%v", fired, err)
+	}
+	if fired, err := r.CompleteGroupMember(ctx, mk(1, nil)); err != nil || fired {
+		t.Fatalf("m1: fired=%v err=%v", fired, err)
+	}
+	// 결과 HASH에 인덱스 필드로 쌓이는지(마지막 멤버 전).
+	if n, _ := client.HLen(ctx, base.GroupResultKey("gq", "g1")).Result(); n != 1 {
+		t.Fatalf("result hash len = %d, want 1", n)
+	}
+	fired, err := r.CompleteGroupMember(ctx, mk(2, []byte(`{"v":2}`)))
+	if err != nil || !fired {
+		t.Fatalf("m2: fired=%v err=%v", fired, err)
+	}
+
+	// 콜백 메시지 검증: GroupResults가 [r0, nil, r2] 순서로 내장.
+	raw, err := client.HGet(ctx, base.TaskKey("gq", "g1:cb"), "msg").Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cbMsg, err := base.DecodeMessage([]byte(raw))
+	if err != nil {
+		t.Fatalf("callback message corrupted by lua roundtrip: %v", err)
+	}
+	if cbMsg.ID != "g1:cb" || cbMsg.Kind != "g:cb" || cbMsg.Queue != "gq" {
+		t.Errorf("callback core fields lost: %+v", cbMsg)
+	}
+	if len(cbMsg.GroupResults) != 3 ||
+		string(cbMsg.GroupResults[0]) != `{"v":0}` ||
+		cbMsg.GroupResults[1] != nil ||
+		string(cbMsg.GroupResults[2]) != `{"v":2}` {
+		t.Errorf("group results = %v", cbMsg.GroupResults)
+	}
+	// 결과 HASH는 삭제됨.
+	if n, _ := client.Exists(ctx, base.GroupResultKey("gq", "g1")).Result(); n != 0 {
+		t.Error("groupresult hash must be deleted on completion")
+	}
+}
+
+// 아무 멤버도 결과가 없으면 콜백 메시지에 group_results가 아예 없어야 한다
+// (cjson 경로를 타지 않음 — 하위호환·빈 배열 함정 회피).
+func TestCompleteGroupMember_NoResultsMeansNoField(t *testing.T) {
+	client := testutil.NewRedis(t)
+	r := NewRDB(client)
+	ctx := context.Background()
+	cb := &base.ChainLink{Kind: "g:cb", Payload: []byte(`{}`), Queue: "gq"}
+	mk := func(i int) *base.TaskMessage {
+		return &base.TaskMessage{
+			ID: "g2:m" + strconv.Itoa(i), Kind: "g:m", Queue: "gq",
+			GroupID: "g2", GroupQueue: "gq", GroupCallback: cb,
+			GroupIndex: i, GroupSize: 2,
+		}
+	}
+	if err := r.CreateGroup(ctx, "gq", "g2", []string{"g2:m0", "g2:m1"}); err != nil {
+		t.Fatal(err)
+	}
+	r.CompleteGroupMember(ctx, mk(0))
+	if fired, err := r.CompleteGroupMember(ctx, mk(1)); err != nil || !fired {
+		t.Fatalf("fired=%v err=%v", fired, err)
+	}
+	raw, _ := client.HGet(ctx, base.TaskKey("gq", "g2:cb"), "msg").Result()
+	if strings.Contains(raw, "group_results") {
+		t.Errorf("no-result group must omit group_results: %s", raw)
+	}
+	cbMsg, err := base.DecodeMessage([]byte(raw))
+	if err != nil || cbMsg.GroupResults != nil {
+		t.Errorf("decode: %v, results: %v", err, cbMsg.GroupResults)
+	}
+}
+
+// 결과가 있는 멤버가 결과 HASH를 만든 뒤, 무결과 멤버가 뒤늦게(트리클) 보고할 때
+// 결과 HASH의 TTL도 pending SET과 lockstep으로 GroupTTL 근처까지 갱신되는지 확인.
+// 이 갱신이 없으면 무결과 멤버가 GroupTTL보다 긴 간격으로 보고하는 동안 HASH가
+// SET보다 먼저 만료되어 이미 기록된 결과가 소실될 수 있다.
+func TestCompleteGroupMember_NoResultReportRefreshesResultHashTTL(t *testing.T) {
+	client := testutil.NewRedis(t)
+	r := NewRDB(client)
+	ctx := context.Background()
+
+	cb := &base.ChainLink{Kind: "g:cb", Payload: []byte(`{}`), Queue: "gq"}
+	mk := func(i int, result []byte) *base.TaskMessage {
+		return &base.TaskMessage{
+			ID: "g3:m" + strconv.Itoa(i), Kind: "g:m", Queue: "gq",
+			GroupID: "g3", GroupQueue: "gq", GroupCallback: cb,
+			GroupIndex: i, GroupSize: 3, Result: result,
+		}
+	}
+	if err := r.CreateGroup(ctx, "gq", "g3", []string{"g3:m0", "g3:m1", "g3:m2"}); err != nil {
+		t.Fatal(err)
+	}
+	// 결과 있는 멤버가 HASH를 만든다(TTL = GroupTTL).
+	if fired, err := r.CompleteGroupMember(ctx, mk(0, []byte(`{"v":0}`))); err != nil || fired {
+		t.Fatalf("m0: fired=%v err=%v", fired, err)
+	}
+	// HASH TTL을 인위적으로 짧게 줄여, 무결과 보고가 lockstep으로 다시 늘리는지 본다.
+	resultKey := base.GroupResultKey("gq", "g3")
+	if err := client.Expire(ctx, resultKey, time.Minute).Err(); err != nil {
+		t.Fatalf("expire: %v", err)
+	}
+	// 무결과 멤버 보고(ARGV[8] == "").
+	if fired, err := r.CompleteGroupMember(ctx, mk(1, nil)); err != nil || fired {
+		t.Fatalf("m1: fired=%v err=%v", fired, err)
+	}
+	ttl, err := client.TTL(ctx, resultKey).Result()
+	if err != nil {
+		t.Fatalf("ttl: %v", err)
+	}
+	if ttl <= time.Minute {
+		t.Errorf("result hash ttl = %v, want refreshed to ~%v", ttl, GroupTTL)
 	}
 }
 

@@ -585,6 +585,7 @@ func (s *Server) enqueueNext(ctx context.Context, msg *base.TaskMessage) error {
 		Chain:      msg.Chain[1:],
 		ChainID:    msg.ChainID,
 		ChainIndex: msg.ChainIndex + 1,
+		PrevResult: msg.Result, // 이번 링크의 결과를 후속에 릴레이
 	}
 	enqueued, err := s.rdb.EnqueueChainLink(ctx, next, time.Duration(link.Delay)*time.Second)
 	if err != nil {

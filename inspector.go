@@ -171,6 +171,8 @@ func taskInfoFromMsg(m *base.TaskMessage) *TaskInfo {
 	}
 	ti.GroupID = m.GroupID
 	ti.GroupQueue = m.GroupQueue
+	ti.HasResult = len(m.Result) > 0
+	ti.ResultSize = len(m.Result)
 	return ti
 }
 

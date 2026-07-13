@@ -2,7 +2,8 @@
 // do: the core queue, reliability (retry / dead-letter), delayed + unique tasks,
 // the Inspector, the distributed scheduler with leader failover, the retention
 // janitor, the heartbeat, weighted priority queues, completed-task retention,
-// task chains, task groups, and queue pause/resume. It is not a test — it is meant to be *watched*:
+// task chains, task groups, task results (step-to-step data passing), and queue
+// pause/resume. It is not a test — it is meant to be *watched*:
 // run it and read the output to see tasks being enqueued, processed, retried,
 // dead-lettered, delayed, deduplicated, scheduled across a leader hand-off,
 // auto-cleaned, and kept alive past RecoverMinIdle by the heartbeat.
@@ -94,6 +95,23 @@ type GroupReportArgs struct {
 }
 
 func (GroupReportArgs) Kind() string { return "demo:groupreport" }
+
+// OcrArgs is the first step of the result-passing demo (OCR → translate).
+type OcrArgs struct {
+	Image string `json:"image"`
+}
+
+func (OcrArgs) Kind() string { return "tour:ocr" }
+
+// OcrOut is the OCR step's result, relayed to the translate step.
+type OcrOut struct {
+	Text string `json:"text"`
+}
+
+// TranslateArgs is the second step; it reads the previous step's result.
+type TranslateArgs struct{}
+
+func (TranslateArgs) Kind() string { return "tour:translate" }
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
@@ -508,6 +526,33 @@ func main() {
 	shutPause2, cancelP2 := context.WithTimeout(context.Background(), 3*time.Second)
 	_ = psrv2.Shutdown(shutPause2)
 	cancelP2()
+
+	section("15) 결과 전달: 앞 스텝의 산출물이 다음 스텝으로 — OCR→번역 축소판")
+	resMux := chronos.NewMux()
+	chronos.AddHandlerR(resMux, func(ctx context.Context, t *chronos.Task[OcrArgs]) (OcrOut, error) {
+		fmt.Printf("   ▶ [ocr] %s 인식\n", t.Args.Image)
+		return OcrOut{Text: "hello chronos"}, nil
+	})
+	chronos.AddHandler(resMux, func(ctx context.Context, t *chronos.Task[TranslateArgs]) error {
+		out, err := chronos.PrevResult[OcrOut](t)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("   ▶ [translate] 이전 스텝 결과 수신: %q → 번역 완료\n", out.Text)
+		return nil
+	})
+	resSrv := chronos.NewServer(rdb, chronos.ServerConfig{Queues: map[string]int{"results": 1}, Concurrency: 2})
+	if err := resSrv.Start(ctx, resMux); err != nil {
+		fmt.Printf("results 서버 start 실패: %v\n", err)
+	}
+	_, _ = chronos.NewChain().
+		Then(OcrArgs{Image: "scan-001.png"}, chronos.WithQueue("results")).
+		Then(TranslateArgs{}, chronos.WithQueue("results")).
+		Enqueue(ctx, client)
+	time.Sleep(2 * time.Second)
+	shutRes, cancelRes := context.WithTimeout(context.Background(), 3*time.Second)
+	_ = resSrv.Shutdown(shutRes)
+	cancelRes()
 
 	fmt.Println("\n───────────────────────────────────────────────")
 	fmt.Println("투어 완료. 위 로그가 chronos-go가 실제로 동작하는 모습입니다.")

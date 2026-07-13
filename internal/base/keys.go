@@ -67,6 +67,14 @@ func GroupKey(cbQueue, groupID string) string {
 	return QueueKeyPrefix(cbQueue) + "group:" + groupID
 }
 
+// GroupResultKey returns the HASH key collecting a group's member results
+// (field = member index, value = base64 of the result JSON) while the group
+// is in flight. Same hash tag as the pending SET — the completion script
+// touches both atomically (cluster-safe).
+func GroupResultKey(cbQueue, groupID string) string {
+	return QueueKeyPrefix(cbQueue) + "groupresult:" + groupID
+}
+
 // ScheduledKey returns the ZSET key holding delayed tasks (score = process_at).
 func ScheduledKey(qname string) string {
 	return QueueKeyPrefix(qname) + "scheduled"
