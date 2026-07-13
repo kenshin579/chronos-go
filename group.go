@@ -119,6 +119,8 @@ func (g *Group) Enqueue(ctx context.Context, c *Client) (*GroupInfo, error) {
 				GroupID:       groupID,
 				GroupQueue:    cbLink.Queue,
 				GroupCallback: &cbLink,
+				GroupIndex:    i,
+				GroupSize:     len(g.members),
 			},
 			options: options,
 		})
