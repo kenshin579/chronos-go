@@ -1,4 +1,4 @@
-.PHONY: test test-race vet fmt fmt-check check test-contrib test-cluster bench bench-build
+.PHONY: test test-race vet fmt fmt-check check test-contrib test-cluster bench bench-build soak soak-quick
 
 # Tests require a Redis reachable at $REDIS_ADDR (default 127.0.0.1:6379).
 # -p 1 runs package test binaries sequentially: they share a single logical
@@ -32,7 +32,7 @@ bench:
 	cd benchmarks && go run ./cmd/bench -target chronos -scenario group
 
 bench-build:
-	cd benchmarks && go build ./... && go vet ./...
+	cd benchmarks && go build ./... && go vet ./... && go test ./soak/ -p 1
 
 vet:
 	go vet ./...
@@ -44,3 +44,12 @@ fmt-check:
 	@out=$$(gofmt -l .); if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
 
 check: fmt-check vet test-race test-contrib bench-build
+
+# Long-running leak soak against a local Redis (DB 15 is FLUSHED).
+# Trustworthy verdicts need >=30m; run 4h before a major release.
+soak:
+	cd benchmarks && go run ./cmd/soak -duration 1h
+
+# 3-minute wiring check — verdict is informational only (always exit 0).
+soak-quick:
+	cd benchmarks && go run ./cmd/soak -duration 3m
