@@ -121,6 +121,66 @@ func (ch *Chain) snapshotTail() ([]base.ChainLink, error) {
 	return tail, nil
 }
 
+// hasGroupStage reports whether any stage is a parallel (ThenGroup) stage.
+func (ch *Chain) hasGroupStage() bool {
+	for _, st := range ch.stages {
+		if st.isGroup {
+			return true
+		}
+	}
+	return false
+}
+
+// snapshotForMember builds the first-link message of a chain used as a group
+// member — same shape as Enqueue produces, but returned (not dispatched) so the
+// caller can attach group-reporting fields. chainID is the member slot ID; the
+// first link's own ID becomes "<chainID>:0". Rejects a ThenGroup stage anywhere
+// and any discard link (a discarded member link would strand the group).
+func (ch *Chain) snapshotForMember(chainID string) (*base.TaskMessage, enqueueOptions, error) {
+	if ch == nil {
+		return nil, enqueueOptions{}, errors.New("chronos: nil chain member")
+	}
+	if len(ch.stages) == 0 {
+		return nil, enqueueOptions{}, errors.New("chronos: empty chain member")
+	}
+	if ch.hasGroupStage() {
+		return nil, enqueueOptions{}, errors.New("chronos: a group member chain cannot contain a parallel stage (ThenGroup) — recursive nesting beyond one level is not supported")
+	}
+	tail, err := ch.snapshotTail()
+	if err != nil {
+		return nil, enqueueOptions{}, err
+	}
+	first := ch.stages[0]
+	options, err := resolveChainOptions(first.opts)
+	if err != nil {
+		return nil, enqueueOptions{}, fmt.Errorf("chain member link 0: %w", err)
+	}
+	if options.noArchive {
+		return nil, enqueueOptions{}, errors.New("chronos: a group member chain link cannot discard (WithDeadLetterDiscard) — it would strand the group")
+	}
+	for _, l := range tail {
+		if l.NoArchive {
+			return nil, enqueueOptions{}, errors.New("chronos: a group member chain link cannot discard (WithDeadLetterDiscard) — it would strand the group")
+		}
+	}
+	payload, err := encodeArgs(first.args)
+	if err != nil {
+		return nil, enqueueOptions{}, fmt.Errorf("chain member link 0: %w", err)
+	}
+	msg := &base.TaskMessage{
+		ID:         chainID + ":0",
+		Kind:       first.args.Kind(),
+		Payload:    payload,
+		Queue:      options.queue,
+		MaxRetry:   options.maxRetry,
+		Retention:  int64(options.retention / time.Second),
+		Chain:      tail,
+		ChainID:    chainID,
+		ChainIndex: 0,
+	}
+	return msg, options, nil
+}
+
 // snapshotStage freezes stage i (single task or group) into a ChainLink.
 func (ch *Chain) snapshotStage(i int) (base.ChainLink, error) {
 	st := ch.stages[i]
@@ -154,6 +214,9 @@ func snapshotGroupStage(g *Group, i int, isLast bool) (base.ChainLink, error) {
 	}
 	link.Group = make([]base.GroupMemberLink, 0, len(g.members))
 	for j, m := range g.members {
+		if m.isChain {
+			return base.ChainLink{}, fmt.Errorf("chain stage %d member %d: a group used as a chain stage cannot have chain members yet", i, j)
+		}
 		o, err := resolveChainOptions(m.opts)
 		if err != nil {
 			return base.ChainLink{}, fmt.Errorf("chain stage %d member %d: %w", i, j, err)

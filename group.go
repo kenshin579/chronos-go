@@ -21,13 +21,19 @@ import (
 //
 // Handlers must be idempotent, as everywhere in chronos-go.
 type Group struct {
-	members []struct {
-		args TaskArgs
-		opts []Option
-	}
+	members      []groupMember
 	callback     TaskArgs
 	callbackOpts []Option
 	hasCallback  bool
+}
+
+// groupMember is one member: a single task (isChain false) or a chain
+// (isChain true, chain may still be nil — validated at Enqueue).
+type groupMember struct {
+	args    TaskArgs
+	opts    []Option
+	chain   *Chain
+	isChain bool
 }
 
 // GroupInfo describes an enqueued group.
@@ -43,10 +49,17 @@ func NewGroup() *Group { return &Group{} }
 // Add appends a member task. Members run in parallel on their own queues with
 // their own options; WithTaskID and WithUnique are rejected at Enqueue time.
 func (g *Group) Add(args TaskArgs, opts ...Option) *Group {
-	g.members = append(g.members, struct {
-		args TaskArgs
-		opts []Option
-	}{args, opts})
+	g.members = append(g.members, groupMember{args: args, opts: opts})
+	return g
+}
+
+// AddChain appends a chain member: its links run in sequence, and the chain's
+// FINAL link reports the member's completion to this group (its result becomes
+// this member's GroupResults entry). The chain may not contain a ThenGroup
+// stage (one-level nesting only) and its links may not use WithUnique/
+// WithTaskID or WithDeadLetterDiscard.
+func (g *Group) AddChain(ch *Chain) *Group {
+	g.members = append(g.members, groupMember{chain: ch, isChain: true})
 	return g
 }
 
@@ -94,6 +107,23 @@ func (g *Group) Enqueue(ctx context.Context, c *Client) (*GroupInfo, error) {
 	}
 	pending := make([]pendingMember, 0, len(g.members))
 	for i, m := range g.members {
+		memberSlot := memberIDs[i] // "<groupID>:m<i>"
+		if m.isChain {
+			msg, options, err := m.chain.snapshotForMember(memberSlot)
+			if err != nil {
+				return nil, fmt.Errorf("group member %d: %w", i, err)
+			}
+			// 그룹 보고 필드: 마지막 링크까지 enqueueNext가 전파, 마지막 링크가 보고.
+			msg.GroupID = groupID
+			msg.GroupQueue = cbLink.Queue
+			msg.GroupCallback = &cbLink
+			msg.GroupIndex = i
+			msg.GroupSize = len(g.members)
+			msg.GroupMemberID = memberSlot
+			pending = append(pending, pendingMember{msg: msg, options: options})
+			continue
+		}
+		// --- 단일 태스크 경로 (m.args/m.opts) ---
 		options, err := resolveChainOptions(m.opts)
 		if err != nil {
 			return nil, fmt.Errorf("group member %d: %w", i, err)
@@ -110,7 +140,7 @@ func (g *Group) Enqueue(ctx context.Context, c *Client) (*GroupInfo, error) {
 		}
 		pending = append(pending, pendingMember{
 			msg: &base.TaskMessage{
-				ID:            memberIDs[i],
+				ID:            memberSlot,
 				Kind:          m.args.Kind(),
 				Payload:       payload,
 				Queue:         options.queue,

@@ -1,0 +1,84 @@
+package chronos
+
+import (
+	"context"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/kenshin579/chronos-go/internal/testutil"
+)
+
+type mcDump struct {
+	T string `json:"t"`
+}
+
+func (mcDump) Kind() string { return "mc:dump" }
+
+type mcXform struct {
+	T string `json:"t"`
+}
+
+func (mcXform) Kind() string { return "mc:xform" }
+
+type mcLoad struct {
+	T string `json:"t"`
+}
+
+func (mcLoad) Kind() string { return "mc:load" }
+
+type mcVerify struct{}
+
+func (mcVerify) Kind() string { return "mc:verify" }
+
+type mcInner struct{}
+
+func (mcInner) Kind() string { return "mc:inner" }
+
+// 검증 에러는 Enqueue 시점에 결정적으로 발생 — Redis 도달 전.
+func groupEnqErr(t *testing.T, g *Group) string {
+	t.Helper()
+	client := testutil.NewRedis(t)
+	_, err := g.Enqueue(context.Background(), NewClient(client))
+	if err == nil {
+		t.Fatal("want validation error")
+	}
+	return err.Error()
+}
+
+func TestAddChain_Validation(t *testing.T) {
+	// nil 체인 거부.
+	if msg := groupEnqErr(t, NewGroup().AddChain(nil).OnComplete(mcVerify{})); !strings.Contains(msg, "nil") {
+		t.Errorf("nil chain: %s", msg)
+	}
+	// 빈 체인 거부.
+	if msg := groupEnqErr(t, NewGroup().AddChain(NewChain()).OnComplete(mcVerify{})); !strings.Contains(msg, "empty") {
+		t.Errorf("empty chain: %s", msg)
+	}
+	// ThenGroup 포함 멤버 체인 거부(1레벨 경계).
+	nested := NewChain().Then(mcDump{}).ThenGroup(NewGroup().Add(mcInner{}).OnComplete(mcVerify{}))
+	if msg := groupEnqErr(t, NewGroup().AddChain(nested).OnComplete(mcVerify{})); !strings.Contains(msg, "parallel stage") {
+		t.Errorf("nested ThenGroup: %s", msg)
+	}
+	// 멤버 체인 링크의 WithUnique 거부.
+	if msg := groupEnqErr(t, NewGroup().AddChain(
+		NewChain().Then(mcDump{}, WithUnique(time.Minute))).OnComplete(mcVerify{})); !strings.Contains(msg, "WithUnique") {
+		t.Errorf("unique: %s", msg)
+	}
+	// 멤버 체인 어느 링크든 discard 거부.
+	if msg := groupEnqErr(t, NewGroup().AddChain(
+		NewChain().Then(mcDump{}).Then(mcLoad{}, WithDeadLetterDiscard())).OnComplete(mcVerify{})); !strings.Contains(msg, "discard") {
+		t.Errorf("discard: %s", msg)
+	}
+}
+
+// 그룹이 ThenGroup 스테이지로 쓰일 때는 체인 멤버 미지원(범위 밖) — 명확히 거부.
+func TestThenGroupStage_RejectsChainMembers(t *testing.T) {
+	client := testutil.NewRedis(t)
+	ch := NewChain().Then(mcDump{}).ThenGroup(
+		NewGroup().AddChain(NewChain().Then(mcXform{})).OnComplete(mcVerify{}))
+	_, err := ch.Enqueue(context.Background(), NewClient(client))
+	if err == nil || !strings.Contains(err.Error(), "chain member") {
+		t.Fatalf("want chain-member rejection, got %v", err)
+	}
+}
