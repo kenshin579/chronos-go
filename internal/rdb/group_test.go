@@ -377,3 +377,37 @@ func TestGroup_SetHasTTL(t *testing.T) {
 		t.Errorf("ttl = %v, want (0, %v]", ttl, GroupTTL)
 	}
 }
+
+// 체인 멤버: 마지막 링크의 자기 ID는 "g:m0:2"지만 SREM 대상은 슬롯 "g:m0".
+func TestCompleteGroupMember_SremsGroupMemberSlot(t *testing.T) {
+	client := testutil.NewRedis(t)
+	r := NewRDB(client)
+	ctx := context.Background()
+
+	cb := &base.ChainLink{Kind: "cb", Payload: []byte(`{}`), Queue: "gq"}
+	if err := r.CreateGroup(ctx, "gq", "g", []string{"g:m0", "g:m1"}); err != nil {
+		t.Fatal(err)
+	}
+	// 멤버 0 = 체인, 마지막 링크가 보고: 자기 ID "g:m0:2", 슬롯 "g:m0".
+	m0 := &base.TaskMessage{
+		ID: "g:m0:2", Kind: "cb", Queue: "gq",
+		GroupID: "g", GroupQueue: "gq", GroupCallback: cb,
+		GroupIndex: 0, GroupSize: 2, GroupMemberID: "g:m0",
+	}
+	if fired, err := r.CompleteGroupMember(ctx, m0); err != nil || fired {
+		t.Fatalf("m0: fired=%v err=%v", fired, err)
+	}
+	if ok, _ := client.SIsMember(ctx, base.GroupKey("gq", "g"), "g:m0").Result(); ok {
+		t.Error("slot g:m0 should have been SREM'd")
+	}
+	// 멤버 1 = flat, GroupMemberID 없음 → ID 폴백.
+	m1 := &base.TaskMessage{
+		ID: "g:m1", Kind: "cb", Queue: "gq",
+		GroupID: "g", GroupQueue: "gq", GroupCallback: cb,
+		GroupIndex: 1, GroupSize: 2,
+	}
+	fired, err := r.CompleteGroupMember(ctx, m1)
+	if err != nil || !fired {
+		t.Fatalf("m1: fired=%v err=%v", fired, err)
+	}
+}

@@ -243,7 +243,11 @@ func (r *RDB) CompleteGroupMember(ctx context.Context, member *base.TaskMessage)
 	if len(member.Result) > 0 {
 		resultB64 = base64.StdEncoding.EncodeToString(member.Result)
 	}
-	argv := []interface{}{member.ID, encoded, int(state), cb.ID, mode, score,
+	memberSlot := member.GroupMemberID
+	if memberSlot == "" {
+		memberSlot = member.ID // flat member: slot == own ID
+	}
+	argv := []interface{}{memberSlot, encoded, int(state), cb.ID, mode, score,
 		int(GroupTTL / time.Second), resultB64, member.GroupIndex, member.GroupSize}
 	n, err := groupCompleteCmd.Run(ctx, r.client, keys, argv...).Int()
 	if err != nil {
