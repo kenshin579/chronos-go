@@ -252,3 +252,27 @@ func TestGroupStageLinkRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+func TestGroupMemberIDRoundTrip(t *testing.T) {
+	in := &TaskMessage{
+		ID: "g1:m2:3", Kind: "k", Queue: "q",
+		GroupID: "g1", GroupQueue: "cbq", GroupIndex: 2,
+		GroupMemberID: "g1:m2", // pending SET 슬롯 (자기 ID와 다름)
+	}
+	b, err := EncodeMessage(in)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	out, err := DecodeMessage(b)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.GroupMemberID != "g1:m2" {
+		t.Errorf("GroupMemberID lost: %q", out.GroupMemberID)
+	}
+	// 빈 값은 생략(하위호환 — flat 멤버는 이 필드 없이 SREM에 ID 폴백).
+	empty, _ := EncodeMessage(&TaskMessage{ID: "t", Kind: "k", Queue: "q"})
+	if strings.Contains(string(empty), "group_member_id") {
+		t.Error("empty GroupMemberID must be omitted")
+	}
+}
