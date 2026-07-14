@@ -70,6 +70,12 @@ func TestAddChain_Validation(t *testing.T) {
 		NewChain().Then(mcDump{}).Then(mcLoad{}, WithDeadLetterDiscard())).OnComplete(mcVerify{})); !strings.Contains(msg, "discard") {
 		t.Errorf("discard: %s", msg)
 	}
+	// 첫 링크 지연이 GroupTTL(7일)을 넘으면 거부 — pending SET이 멤버 실행 전
+	// 만료되어 콜백이 조용히 미발화하는 좌초를 막는다(flat·ThenGroup 경로와 일관).
+	if msg := groupEnqErr(t, NewGroup().AddChain(
+		NewChain().Then(mcDump{}, WithProcessIn(8*24*time.Hour))).OnComplete(mcVerify{})); !strings.Contains(msg, "TTL") {
+		t.Errorf("first-link delay exceeds TTL: %s", msg)
+	}
 }
 
 // 그룹이 ThenGroup 스테이지로 쓰일 때는 체인 멤버 미지원(범위 밖) — 명확히 거부.
