@@ -218,7 +218,8 @@ info, err := chronos.NewGroup().
   strand the group).
 - Enqueueing members is not atomic: if it fails midway, already-enqueued
   members still run, but the callback can never fire early.
-- Not yet composable with chains (no group-as-chain-link).
+- A group can also sit inside a chain as a parallel stage — see
+  [Parallel stages](#parallel-stages-fan-out--fan-in).
 
 ### Passing results between steps
 
@@ -235,6 +236,28 @@ a reference (object-store path, row ID) for big artifacts.
 Each chain link receives only its *immediate* predecessor's result: an
 intermediate link registered with plain `AddHandler` (no result) breaks the
 relay, so the link after it gets `ErrNoResult` from `PrevResult`.
+
+### Parallel stages (fan-out → fan-in)
+
+`ThenGroup` puts a group in the middle (or at the end) of a chain:
+
+```go
+chronos.NewChain().
+	Then(Validate{}).
+	ThenGroup(chronos.NewGroup().
+		Add(Encode{Res: "720p"}).
+		Add(Encode{Res: "4k"}).
+		OnComplete(BuildManifest{})).   // fan-in: receives GroupResults
+	Then(Deploy{}).                     // receives the callback's result
+	Enqueue(ctx, client)
+```
+
+Every member receives the previous stage's result (`PrevResult`), the
+callback fans the member results in, and its own result flows to the next
+stage. Failure semantics are unchanged: a dead-lettered member stalls the
+stage until you re-run it (`RunTask`), and completed stages are fenced
+against predecessor redeliveries. A group cannot be the first stage — start
+with `Then`, or use `NewGroup` directly.
 
 ## Scheduling (interval & cron)
 
@@ -385,7 +408,8 @@ crashes after finishing but before acking). **Make handlers idempotent.**
 - The unique lock is heartbeat-renewed only while a task is *actively
   processing*; while it waits in the scheduled/retry set, it is covered by its
   TTL — set the TTL comfortably above expected waiting time.
-- Not yet built: chain×group composition (groups and chains cannot nest yet).
+- A group can be a chain stage (`ThenGroup`), but recursive nesting — a group
+  member that is itself a chain or group — is not supported.
 
 ## Development
 
