@@ -255,9 +255,11 @@ chronos.NewChain().
 Every member receives the previous stage's result (`PrevResult`), the
 callback fans the member results in, and its own result flows to the next
 stage. Failure semantics are unchanged: a dead-lettered member stalls the
-stage until you re-run it (`RunTask`), and completed stages are fenced
-against predecessor redeliveries. A group cannot be the first stage — start
-with `Then`, or use `NewGroup` directly.
+stage until you re-run it (`RunTask`), and a completed stage is fenced
+against predecessor redeliveries for as long as its callback hash lives — set
+`WithRetention` on the `OnComplete` callback to keep that window closed (the
+knob is the callback's retention, not the members'). A group cannot be the
+first stage — start with `Then`, or use `NewGroup` directly.
 
 ## Scheduling (interval & cron)
 
