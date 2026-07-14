@@ -122,12 +122,19 @@ type MergeArgs struct{}
 func (MergeArgs) Kind() string { return "tour:merge" }
 
 // MigDump is the first link of a per-tenant migration chain (group member chain
-// demo): dump → load, one chain per tenant, run in parallel.
+// demo): dump → transform → load, one chain per tenant, run in parallel.
 type MigDump struct {
 	Tenant string `json:"tenant"`
 }
 
 func (MigDump) Kind() string { return "tour:mig-dump" }
+
+// MigTransform is the migration chain's middle link.
+type MigTransform struct {
+	Tenant string `json:"tenant"`
+}
+
+func (MigTransform) Kind() string { return "tour:mig-transform" }
 
 // MigLoad is the migration chain's final link; it reports the member's result.
 type MigLoad struct {
@@ -136,7 +143,8 @@ type MigLoad struct {
 
 func (MigLoad) Kind() string { return "tour:mig-load" }
 
-// MigOut is the row count relayed dump → load and collected by the callback.
+// MigOut is the row count relayed dump → transform → load and collected by the
+// callback.
 type MigOut struct {
 	Rows int `json:"rows"`
 }
@@ -604,6 +612,11 @@ func main() {
 		fmt.Printf("   ▶ [dump] %s\n", t.Args.Tenant)
 		return MigOut{Rows: len(t.Args.Tenant) * 10}, nil
 	})
+	chronos.AddHandlerR(migMux, func(ctx context.Context, t *chronos.Task[MigTransform]) (MigOut, error) {
+		prev, _ := chronos.PrevResult[MigOut](t)
+		fmt.Printf("   ▶ [transform] %s (%d rows)\n", t.Args.Tenant, prev.Rows)
+		return MigOut{Rows: prev.Rows}, nil
+	})
 	chronos.AddHandlerR(migMux, func(ctx context.Context, t *chronos.Task[MigLoad]) (MigOut, error) {
 		prev, _ := chronos.PrevResult[MigOut](t)
 		fmt.Printf("   ▶ [load] %s (%d rows)\n", t.Args.Tenant, prev.Rows)
@@ -626,6 +639,7 @@ func main() {
 	for _, tenant := range []string{"acme", "globex", "initech"} {
 		migG.AddChain(chronos.NewChain().
 			Then(MigDump{Tenant: tenant}, chronos.WithQueue("mig")).
+			Then(MigTransform{Tenant: tenant}, chronos.WithQueue("mig")).
 			Then(MigLoad{Tenant: tenant}, chronos.WithQueue("mig")))
 	}
 	_, _ = migG.OnComplete(MigVerify{}, chronos.WithQueue("mig")).Enqueue(ctx, client)

@@ -154,3 +154,68 @@ func TestGroupMemberChain_MidLinkDeadLetterResumes(t *testing.T) {
 		t.Fatal("group did not resume to callback after RunTask")
 	}
 }
+
+type mcFlat struct{}
+
+func (mcFlat) Kind() string { return "mc:flat" }
+
+// flat 멤버 + 체인 멤버 혼용: 콜백이 Add 순서로 두 결과를 받는다(멤버0=flat,
+// 멤버1=2링크 체인). flat 멤버는 GroupMemberID 폴백(자기 ID), 체인 멤버는 슬롯.
+func TestGroupMemberChain_MixedFlatAndChain(t *testing.T) {
+	client := testutil.NewRedis(t)
+	ctx := context.Background()
+
+	var got atomic.Pointer[[]string]
+	mux := NewMux()
+	AddHandlerR(mux, func(ctx context.Context, task *Task[mcFlat]) (mcOut, error) {
+		return mcOut{V: "flat"}, nil
+	})
+	AddHandlerR(mux, func(ctx context.Context, task *Task[mcDump]) (mcOut, error) {
+		return mcOut{V: "d"}, nil
+	})
+	AddHandlerR(mux, func(ctx context.Context, task *Task[mcLoad]) (mcOut, error) {
+		prev, _ := PrevResult[mcOut](task)
+		return mcOut{V: "l(" + prev.V + ")"}, nil
+	})
+	AddHandler(mux, func(ctx context.Context, task *Task[mcVerify]) error {
+		rs, err := GroupResults[mcOut](task)
+		if err != nil {
+			return err
+		}
+		vs := make([]string, len(rs))
+		for i, r := range rs {
+			vs[i] = r.V
+		}
+		got.Store(&vs)
+		return nil
+	})
+
+	srv := NewServer(client, ServerConfig{Queues: map[string]int{"mc": 1}, Concurrency: 4})
+	if err := srv.Start(ctx, mux); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	_, err := NewGroup().
+		Add(mcFlat{}, WithQueue("mc")). // 멤버0: flat 단일 태스크
+		AddChain(NewChain().            // 멤버1: 2링크 체인
+						Then(mcDump{}, WithQueue("mc")).
+						Then(mcLoad{}, WithQueue("mc"))).
+		OnComplete(mcVerify{}, WithQueue("mc")).
+		Enqueue(ctx, NewClient(client))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(15 * time.Second)
+	for got.Load() == nil && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	rs := got.Load()
+	if rs == nil {
+		t.Fatal("callback never ran (mixed members)")
+	}
+	if len(*rs) != 2 || (*rs)[0] != "flat" || (*rs)[1] != "l(d)" {
+		t.Fatalf("group results = %v, want [flat l(d)]", *rs)
+	}
+}
