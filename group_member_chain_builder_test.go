@@ -76,6 +76,15 @@ func TestAddChain_Validation(t *testing.T) {
 		NewChain().Then(mcDump{}, WithProcessIn(8*24*time.Hour))).OnComplete(mcVerify{})); !strings.Contains(msg, "TTL") {
 		t.Errorf("first-link delay exceeds TTL: %s", msg)
 	}
+	// 링크별 지연은 개별로는 GroupTTL 이내여도 합산이 넘으면 거부 — pending SET
+	// TTL은 체인 진행 중 갱신되지 않으므로 링크 지연의 총합이 창을 넘으면 좌초.
+	// 첫 링크 4일 + tail 링크 4일 = 8일 > 7일.
+	if msg := groupEnqErr(t, NewGroup().AddChain(
+		NewChain().
+			Then(mcDump{}, WithProcessIn(4*24*time.Hour)).
+			Then(mcLoad{}, WithProcessIn(4*24*time.Hour))).OnComplete(mcVerify{})); !strings.Contains(msg, "TTL") {
+		t.Errorf("summed link delays exceed TTL: %s", msg)
+	}
 }
 
 // 그룹이 ThenGroup 스테이지로 쓰일 때는 체인 멤버 미지원(범위 밖) — 명확히 거부.
