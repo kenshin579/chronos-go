@@ -162,12 +162,12 @@ func taskInfoFromMsg(m *base.TaskMessage) *TaskInfo {
 	}
 	ti.ChainPending = len(m.Chain)
 	ti.ChainIndex = m.ChainIndex
-	if len(m.Chain) > 0 {
-		kinds := make([]string, len(m.Chain))
-		for i, l := range m.Chain {
-			kinds[i] = l.Kind
+	for _, link := range m.Chain {
+		if len(link.Group) > 0 {
+			ti.ChainNext = append(ti.ChainNext, fmt.Sprintf("group[%d]→%s", len(link.Group), link.Kind))
+			continue
 		}
-		ti.ChainNext = kinds
+		ti.ChainNext = append(ti.ChainNext, link.Kind)
 	}
 	ti.GroupID = m.GroupID
 	ti.GroupQueue = m.GroupQueue
