@@ -261,6 +261,27 @@ against predecessor redeliveries for as long as its callback hash lives — set
 knob is the callback's retention, not the members'). A group cannot be the
 first stage — start with `Then`, or use `NewGroup` directly.
 
+### Chains as group members
+
+A group member can be a chain (`AddChain`): each member runs its links in
+sequence, and the chain's final link reports the member's completion to the
+group (its last result becomes that member's `GroupResults` entry). This
+expresses fan-out-of-pipelines — e.g. migrate N tenants, each a
+dump→transform→load chain, in parallel, then a verify callback:
+
+```go
+g := chronos.NewGroup()
+for _, t := range tenants {
+	g.AddChain(chronos.NewChain().Then(Dump{t}).Then(Transform{t}).Then(Load{t}))
+}
+g.OnComplete(Verify{}).Enqueue(ctx, client)
+```
+
+A dead-lettered member link stalls that member until you re-run it
+(`RunTask`); the chain then resumes to its final link and reports. Nesting is
+one level deep: a member chain may not contain a `ThenGroup` stage, and a
+group used as a `ThenGroup` stage may not have chain members.
+
 ## Scheduling (interval & cron)
 
 Register periodic jobs on a `Scheduler`. Every instance may call `Start`; only
@@ -410,8 +431,10 @@ crashes after finishing but before acking). **Make handlers idempotent.**
 - The unique lock is heartbeat-renewed only while a task is *actively
   processing*; while it waits in the scheduled/retry set, it is covered by its
   TTL — set the TTL comfortably above expected waiting time.
-- A group can be a chain stage (`ThenGroup`), but recursive nesting — a group
-  member that is itself a chain or group — is not supported.
+- Nesting is one level deep: a group can be a chain stage (`ThenGroup`) and a
+  chain can be a group member (`AddChain`), but a second level — a member chain
+  that itself has a parallel (`ThenGroup`) stage, or a group whose member is
+  itself a group — is not supported.
 
 ## Development
 
