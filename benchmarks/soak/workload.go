@@ -249,13 +249,16 @@ func (w *Workload) tickers(ctx context.Context) {
 					log.Printf("soak: unique enqueue: %v", err)
 				}
 			}
-			// chain 3링크.
-			ch := chronos.NewChain().
+			// chain 3링크 → 팬아웃→팬인→후속 워크플로(단일+그룹+단일 스테이지).
+			wf := chronos.NewChain().
 				Then(chainArgs{Seq: batch, Link: 0}, chronos.WithQueue("soak-a")).
-				Then(chainArgs{Seq: batch, Link: 1}, chronos.WithQueue("soak-b")).
+				ThenGroup(chronos.NewGroup().
+					Add(groupArgs{Seq: batch, Member: 0}, chronos.WithQueue("soak-a")).
+					Add(groupArgs{Seq: batch, Member: 1}, chronos.WithQueue("soak-b")).
+					OnComplete(cbArgs{Seq: batch}, chronos.WithQueue("soak-a"))).
 				Then(chainArgs{Seq: batch, Link: 2}, chronos.WithQueue("soak-a"))
-			if _, err := ch.Enqueue(ctx, w.client); err != nil && ctx.Err() == nil {
-				log.Printf("soak: chain enqueue: %v", err)
+			if _, err := wf.Enqueue(ctx, w.client); err != nil && ctx.Err() == nil {
+				log.Printf("soak: workflow enqueue: %v", err)
 			}
 			// group 3멤버 + 콜백.
 			g := chronos.NewGroup().

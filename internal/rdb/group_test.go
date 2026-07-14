@@ -264,6 +264,103 @@ func TestCompleteGroupMember_NoResultReportRefreshesResultHashTTL(t *testing.T) 
 	}
 }
 
+// CreateGroupIfAbsent의 3상태: 신규 생성(2) / 이미 존재(1) / 콜백 존재 = 스테이지 완료(0).
+func TestCreateGroupIfAbsent_ThreeStates(t *testing.T) {
+	client := testutil.NewRedis(t)
+	r := NewRDB(client)
+	ctx := context.Background()
+
+	members := []string{"c1:1:m0", "c1:1:m1"}
+	st, err := r.CreateGroupIfAbsent(ctx, "gq", "c1:1", members, "c1:1:cb")
+	if err != nil || st != GroupStageCreated {
+		t.Fatalf("first create: st=%v err=%v", st, err)
+	}
+	// SET이 생겼고 TTL이 걸림.
+	if n, _ := client.SCard(ctx, base.GroupKey("gq", "c1:1")).Result(); n != 2 {
+		t.Fatalf("scard = %d", n)
+	}
+	if ttl, _ := client.TTL(ctx, base.GroupKey("gq", "c1:1")).Result(); ttl <= 0 {
+		t.Fatal("pending set must have a TTL")
+	}
+	// 재호출(선행 재전달): 이미 존재.
+	st, err = r.CreateGroupIfAbsent(ctx, "gq", "c1:1", members, "c1:1:cb")
+	if err != nil || st != GroupStageExists {
+		t.Fatalf("second create: st=%v err=%v", st, err)
+	}
+	// 콜백 hash가 생기면(스테이지 완료) 무엇도 만들지 않음.
+	client.Del(ctx, base.GroupKey("gq", "c1:1"))
+	client.HSet(ctx, base.TaskKey("gq", "c1:1:cb"), "state", 1)
+	st, err = r.CreateGroupIfAbsent(ctx, "gq", "c1:1", members, "c1:1:cb")
+	if err != nil || st != GroupStageDone {
+		t.Fatalf("after callback exists: st=%v err=%v", st, err)
+	}
+	if n, _ := client.Exists(ctx, base.GroupKey("gq", "c1:1")).Result(); n != 0 {
+		t.Fatal("completed stage must not recreate the pending set")
+	}
+
+	// 펜스(콜백 hash) 소멸 후 재생성(return 2): 만료 직전 잔존 결과 HASH가
+	// 새 라운드에 섞이지 않도록 삭제되어야 한다.
+	client.Del(ctx, base.TaskKey("gq", "c1:1:cb"))
+	client.HSet(ctx, base.GroupResultKey("gq", "c1:1"), "0", "stale")
+	st, err = r.CreateGroupIfAbsent(ctx, "gq", "c1:1", members, "c1:1:cb")
+	if err != nil || st != GroupStageCreated {
+		t.Fatalf("recreate after fence expiry: st=%v err=%v", st, err)
+	}
+	if n, _ := client.Exists(ctx, base.GroupResultKey("gq", "c1:1")).Result(); n != 0 {
+		t.Fatal("recreated stage must delete the leftover result hash")
+	}
+}
+
+// 멤버가 GroupCallbackChain을 실어 나르면 콜백이 꼬리(ChainID/ChainIndex 포함)를
+// 상속하고, 결과 cjson 경로에서도 꼬리가 손상되지 않는다.
+func TestCompleteGroupMember_CallbackInheritsChainTail(t *testing.T) {
+	client := testutil.NewRedis(t)
+	r := NewRDB(client)
+	ctx := context.Background()
+
+	tail := []base.ChainLink{{Kind: "wf:deploy", Payload: []byte(`{"env":"prod"}`), Queue: "gq"}}
+	cb := &base.ChainLink{Kind: "wf:merge", Payload: []byte(`{}`), Queue: "gq"}
+	mk := func(i int, result []byte) *base.TaskMessage {
+		return &base.TaskMessage{
+			ID: "c2:1:m" + strconv.Itoa(i), Kind: "wf:enc", Queue: "gq",
+			GroupID: "c2:1", GroupQueue: "gq", GroupCallback: cb,
+			GroupIndex: i, GroupSize: 2, Result: result,
+			ChainID: "c2", ChainIndex: 1, GroupCallbackChain: tail,
+		}
+	}
+	if _, err := r.CreateGroupIfAbsent(ctx, "gq", "c2:1", []string{"c2:1:m0", "c2:1:m1"}, "c2:1:cb"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.CompleteGroupMember(ctx, mk(0, []byte(`{"v":0}`))); err != nil {
+		t.Fatal(err)
+	}
+	fired, err := r.CompleteGroupMember(ctx, mk(1, []byte(`{"v":1}`)))
+	if err != nil || !fired {
+		t.Fatalf("fired=%v err=%v", fired, err)
+	}
+	raw, err := client.HGet(ctx, base.TaskKey("gq", "c2:1:cb"), "msg").Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cbMsg, err := base.DecodeMessage([]byte(raw))
+	if err != nil {
+		t.Fatalf("cjson roundtrip broke the callback: %v", err)
+	}
+	if cbMsg.ChainID != "c2" || cbMsg.ChainIndex != 1 {
+		t.Errorf("chain identity lost: %+v", cbMsg)
+	}
+	if len(cbMsg.Chain) != 1 || cbMsg.Chain[0].Kind != "wf:deploy" ||
+		string(cbMsg.Chain[0].Payload) != `{"env":"prod"}` {
+		t.Errorf("tail lost: %+v", cbMsg.Chain)
+	}
+	if len(cbMsg.GroupResults) != 2 || string(cbMsg.GroupResults[1]) != `{"v":1}` {
+		t.Errorf("results lost alongside tail: %v", cbMsg.GroupResults)
+	}
+	if cbMsg.GroupCallbackChain != nil {
+		t.Error("callback itself must not carry GroupCallbackChain")
+	}
+}
+
 func TestGroup_SetHasTTL(t *testing.T) {
 	client := testutil.NewRedis(t)
 	r := NewRDB(client)

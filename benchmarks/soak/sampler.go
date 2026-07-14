@@ -77,7 +77,8 @@ func (s *Sampler) Collect(ctx context.Context) (Sample, error) {
 	if out.Unique, err = scanCount(ctx, s.rdb, "chronos:*:unique:*"); err != nil {
 		return out, err
 	}
-	if out.Groups, err = scanCount(ctx, s.rdb, "chronos:*:group:*"); err != nil {
+	// group:*(pending SET)과 groupresult:*(수집 HASH)를 함께 센다.
+	if out.Groups, err = scanCount(ctx, s.rdb, "chronos:*:group*"); err != nil {
 		return out, err
 	}
 	if out.Schedules, err = s.rdb.HLen(ctx, "chronos:schedules").Result(); err != nil {

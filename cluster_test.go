@@ -26,6 +26,7 @@ package chronos
 //  [x] requeueCmd (shutdown batch return)                   → TestCluster_RequeueReturnsTask
 //  [x] pause/resume (global SET, consumption gate)          → TestCluster_PauseResume
 //  [x] 결과 릴레이 (chain PrevResult + group cjson 내장 Lua) → TestCluster_ResultRelay
+//  [x] ThenGroup (그룹 스테이지 — create-if-absent 펜스·결과 복제·꼬리 상속) → TestCluster_ThenGroup
 
 import (
 	"context"
@@ -774,3 +775,83 @@ func (clRelayCheckArgs) Kind() string { return "clres:chk" }
 type clRelayCbArgs struct{}
 
 func (clRelayCbArgs) Kind() string { return "clres:cb" }
+
+// ThenGroup 전 구간: 멤버가 다른 큐(다른 슬롯)에 있어도 스테이지 생성·완료·
+// 체인 계속이 CROSSSLOT 없이 동작하는지.
+func TestCluster_ThenGroup(t *testing.T) {
+	client := testutil.NewClusterRedis(t)
+	ctx := context.Background()
+
+	var finalGot atomic.Pointer[string]
+	mux := NewMux()
+	AddHandlerR(mux, func(ctx context.Context, task *Task[clWfPrep]) (clWfOut, error) {
+		return clWfOut{V: "p"}, nil
+	})
+	AddHandlerR(mux, func(ctx context.Context, task *Task[clWfEnc]) (clWfOut, error) {
+		prev, _ := PrevResult[clWfOut](task)
+		return clWfOut{V: prev.V + task.Args.R}, nil
+	})
+	AddHandlerR(mux, func(ctx context.Context, task *Task[clWfMerge]) (clWfOut, error) {
+		rs, err := GroupResults[clWfOut](task)
+		if err != nil {
+			return clWfOut{}, err
+		}
+		return clWfOut{V: rs[0].V + "|" + rs[1].V}, nil
+	})
+	AddHandler(mux, func(ctx context.Context, task *Task[clWfFinal]) error {
+		if prev, err := PrevResult[clWfOut](task); err == nil {
+			finalGot.Store(&prev.V)
+		}
+		return nil
+	})
+
+	srv := NewServer(client, ServerConfig{Queues: map[string]int{"clwf-a": 1, "clwf-b": 1}, Concurrency: 4})
+	if err := srv.Start(ctx, mux); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	_, err := NewChain().
+		Then(clWfPrep{}, WithQueue("clwf-a")).
+		ThenGroup(NewGroup().
+			Add(clWfEnc{R: "x"}, WithQueue("clwf-a")).
+			Add(clWfEnc{R: "y"}, WithQueue("clwf-b")). // 다른 슬롯의 멤버
+			OnComplete(clWfMerge{}, WithQueue("clwf-b"))).
+		Then(clWfFinal{}, WithQueue("clwf-a")).
+		Enqueue(ctx, NewClient(client))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	for finalGot.Load() == nil && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if finalGot.Load() == nil {
+		t.Fatal("workflow never finished on cluster")
+	}
+	if got := *finalGot.Load(); got != "px|py" {
+		t.Errorf("final = %q, want px|py", got)
+	}
+}
+
+type clWfOut struct {
+	V string `json:"v"`
+}
+
+type clWfPrep struct{}
+
+func (clWfPrep) Kind() string { return "clwf:prep" }
+
+type clWfEnc struct {
+	R string `json:"r"`
+}
+
+func (clWfEnc) Kind() string { return "clwf:enc" }
+
+type clWfMerge struct{}
+
+func (clWfMerge) Kind() string { return "clwf:merge" }
+
+type clWfFinal struct{}
+
+func (clWfFinal) Kind() string { return "clwf:final" }

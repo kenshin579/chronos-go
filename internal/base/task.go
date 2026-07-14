@@ -46,6 +46,24 @@ type ChainLink struct {
 	NoArchive bool   `json:"no_archive,omitempty"`
 	Retention int64  `json:"retention,omitempty"` // seconds
 	Delay     int64  `json:"delay,omitempty"`     // seconds before the link runs
+
+	// Group, when non-empty, turns this link into a parallel stage: the
+	// members run concurrently and the link's own task fields (Kind, Payload,
+	// Queue, ...) describe the stage's fan-in callback instead of a single
+	// successor. The callback inherits the chain's remaining tail.
+	Group []GroupMemberLink `json:"group,omitempty"`
+}
+
+// GroupMemberLink freezes one parallel-stage member's enqueue parameters
+// (the single-task subset of ChainLink; members are never NoArchive — a
+// discarded member would strand the group).
+type GroupMemberLink struct {
+	Kind      string `json:"kind"`
+	Payload   []byte `json:"payload"`
+	Queue     string `json:"queue"`
+	MaxRetry  int    `json:"max_retry"`
+	Retention int64  `json:"retention,omitempty"` // seconds
+	Delay     int64  `json:"delay,omitempty"`     // seconds before the member runs
 }
 
 // TaskMessage is the canonical, serialized representation of a task stored in
@@ -118,6 +136,11 @@ type TaskMessage struct {
 	// GroupSize is the group's member count, carried by every member so the
 	// completion script can assemble GroupResults in order.
 	GroupSize int `json:"group_size,omitempty"`
+	// GroupCallbackChain is the chain tail the group's callback must inherit,
+	// carried by every member of a chain-embedded group stage. The completion
+	// script copies it onto the callback message (with ChainID/ChainIndex) so
+	// the chain continues after the fan-in.
+	GroupCallbackChain []ChainLink `json:"group_cb_chain,omitempty"`
 }
 
 // EncodeMessage serializes a TaskMessage for storage in Redis.

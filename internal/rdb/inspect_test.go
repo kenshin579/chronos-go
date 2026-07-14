@@ -44,6 +44,29 @@ func TestQueueStats_CountsByState(t *testing.T) {
 	}
 }
 
+// TaskState는 hash top-level "state" 필드(권위 상태)를 읽고, hash가 없으면
+// redis.Nil을 그대로 돌려 caller가 "태스크 없음"을 구분하게 한다.
+func TestTaskState_ReadsHashStateField(t *testing.T) {
+	client := testutil.NewRedis(t)
+	r := NewRDB(client)
+	ctx := context.Background()
+
+	if err := r.Enqueue(ctx, &base.TaskMessage{ID: "t1", Kind: "k", Payload: []byte("{}"), Queue: "default"}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	st, err := r.TaskState(ctx, "default", "t1")
+	if err != nil {
+		t.Fatalf("task state: %v", err)
+	}
+	if st != base.StatePending {
+		t.Errorf("state = %v, want %v", st, base.StatePending)
+	}
+
+	if _, err := r.TaskState(ctx, "default", "no-such-task"); err != redis.Nil {
+		t.Errorf("missing task err = %v, want redis.Nil", err)
+	}
+}
+
 func TestListZSetTasks_ReturnsMessages(t *testing.T) {
 	client := testutil.NewRedis(t)
 	r := NewRDB(client)

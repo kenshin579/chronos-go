@@ -331,3 +331,31 @@ func TestInspector_PauseResumeAndPausedFlag(t *testing.T) {
 		t.Error("still paused after resume")
 	}
 }
+
+func TestTaskInfo_ChainNextShowsGroupStage(t *testing.T) {
+	client := testutil.NewRedis(t)
+	ctx := context.Background()
+	msg := &base.TaskMessage{ID: "c9:0", Kind: "wf:prep", Queue: "iq2",
+		State: base.StatePending, ChainID: "c9",
+		Chain: []base.ChainLink{
+			{Kind: "wf:merge", Queue: "iq2", Group: []base.GroupMemberLink{
+				{Kind: "wf:enc", Queue: "iq2"}, {Kind: "wf:enc", Queue: "iq2"},
+			}},
+			{Kind: "wf:deploy", Queue: "iq2"},
+		}}
+	encoded, _ := base.EncodeMessage(msg)
+	client.HSet(ctx, base.TaskKey("iq2", "c9:0"), "msg", encoded, "state", int(base.StatePending))
+	client.XAdd(ctx, &redis.XAddArgs{Stream: base.StreamKey("iq2"), Values: map[string]any{"task_id": "c9:0"}})
+
+	insp := NewInspector(client)
+	info, err := insp.GetTask(ctx, "iq2", "c9:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(info.ChainNext) != 2 || info.ChainNext[0] != "group[2]→wf:merge" || info.ChainNext[1] != "wf:deploy" {
+		t.Errorf("ChainNext = %v", info.ChainNext)
+	}
+	if info.ChainPending != 2 {
+		t.Errorf("ChainPending = %d", info.ChainPending)
+	}
+}

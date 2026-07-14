@@ -2,7 +2,7 @@
 // do: the core queue, reliability (retry / dead-letter), delayed + unique tasks,
 // the Inspector, the distributed scheduler with leader failover, the retention
 // janitor, the heartbeat, weighted priority queues, completed-task retention,
-// task chains, task groups, task results (step-to-step data passing), and queue
+// task chains, task groups, workflows (fan-out/fan-in with results), and queue
 // pause/resume. It is not a test — it is meant to be *watched*:
 // run it and read the output to see tasks being enqueued, processed, retried,
 // dead-lettered, delayed, deduplicated, scheduled across a leader hand-off,
@@ -108,10 +108,17 @@ type OcrOut struct {
 	Text string `json:"text"`
 }
 
-// TranslateArgs is the second step; it reads the previous step's result.
-type TranslateArgs struct{}
+// TranslateArgs is a parallel stage member; it reads the previous step's result.
+type TranslateArgs struct {
+	Lang string `json:"lang"`
+}
 
 func (TranslateArgs) Kind() string { return "tour:translate" }
+
+// MergeArgs is the group callback; it fans the parallel translations back in.
+type MergeArgs struct{}
+
+func (MergeArgs) Kind() string { return "tour:merge" }
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
@@ -527,29 +534,40 @@ func main() {
 	_ = psrv2.Shutdown(shutPause2)
 	cancelP2()
 
-	section("15) 결과 전달: 앞 스텝의 산출물이 다음 스텝으로 — OCR→번역 축소판")
+	section("15) 워크플로: OCR → [번역 2개 병렬] → 병합 — 결과가 스테이지를 타고 흐른다")
 	resMux := chronos.NewMux()
 	chronos.AddHandlerR(resMux, func(ctx context.Context, t *chronos.Task[OcrArgs]) (OcrOut, error) {
 		fmt.Printf("   ▶ [ocr] %s 인식\n", t.Args.Image)
 		return OcrOut{Text: "hello chronos"}, nil
 	})
-	chronos.AddHandler(resMux, func(ctx context.Context, t *chronos.Task[TranslateArgs]) error {
-		out, err := chronos.PrevResult[OcrOut](t)
+	chronos.AddHandlerR(resMux, func(ctx context.Context, t *chronos.Task[TranslateArgs]) (OcrOut, error) {
+		src, err := chronos.PrevResult[OcrOut](t)
+		if err != nil {
+			return OcrOut{}, err
+		}
+		fmt.Printf("   ▶ [translate:%s] %q 번역\n", t.Args.Lang, src.Text)
+		return OcrOut{Text: t.Args.Lang + "(" + src.Text + ")"}, nil
+	})
+	chronos.AddHandler(resMux, func(ctx context.Context, t *chronos.Task[MergeArgs]) error {
+		rs, err := chronos.GroupResults[OcrOut](t)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("   ▶ [translate] 이전 스텝 결과 수신: %q → 번역 완료\n", out.Text)
+		fmt.Printf("   ▶ [merge] 병렬 결과 수신: %q + %q\n", rs[0].Text, rs[1].Text)
 		return nil
 	})
-	resSrv := chronos.NewServer(rdb, chronos.ServerConfig{Queues: map[string]int{"results": 1}, Concurrency: 2})
+	resSrv := chronos.NewServer(rdb, chronos.ServerConfig{Queues: map[string]int{"results": 1}, Concurrency: 4})
 	if err := resSrv.Start(ctx, resMux); err != nil {
 		fmt.Printf("results 서버 start 실패: %v\n", err)
 	}
 	_, _ = chronos.NewChain().
 		Then(OcrArgs{Image: "scan-001.png"}, chronos.WithQueue("results")).
-		Then(TranslateArgs{}, chronos.WithQueue("results")).
+		ThenGroup(chronos.NewGroup().
+			Add(TranslateArgs{Lang: "ko"}, chronos.WithQueue("results")).
+			Add(TranslateArgs{Lang: "ja"}, chronos.WithQueue("results")).
+			OnComplete(MergeArgs{}, chronos.WithQueue("results"))).
 		Enqueue(ctx, client)
-	time.Sleep(2 * time.Second)
+	time.Sleep(3 * time.Second)
 	shutRes, cancelRes := context.WithTimeout(context.Background(), 3*time.Second)
 	_ = resSrv.Shutdown(shutRes)
 	cancelRes()
