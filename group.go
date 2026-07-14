@@ -21,13 +21,19 @@ import (
 //
 // Handlers must be idempotent, as everywhere in chronos-go.
 type Group struct {
-	members []struct {
-		args TaskArgs
-		opts []Option
-	}
+	members      []groupMember
 	callback     TaskArgs
 	callbackOpts []Option
 	hasCallback  bool
+}
+
+// groupMember is one member: a single task (isChain false) or a chain
+// (isChain true, chain may still be nil — validated at Enqueue).
+type groupMember struct {
+	args    TaskArgs
+	opts    []Option
+	chain   *Chain
+	isChain bool
 }
 
 // GroupInfo describes an enqueued group.
@@ -43,10 +49,17 @@ func NewGroup() *Group { return &Group{} }
 // Add appends a member task. Members run in parallel on their own queues with
 // their own options; WithTaskID and WithUnique are rejected at Enqueue time.
 func (g *Group) Add(args TaskArgs, opts ...Option) *Group {
-	g.members = append(g.members, struct {
-		args TaskArgs
-		opts []Option
-	}{args, opts})
+	g.members = append(g.members, groupMember{args: args, opts: opts})
+	return g
+}
+
+// AddChain appends a chain member: its links run in sequence, and the chain's
+// FINAL link reports the member's completion to this group (its result becomes
+// this member's GroupResults entry). The chain may not contain a ThenGroup
+// stage (one-level nesting only) and its links may not use WithUnique/
+// WithTaskID or WithDeadLetterDiscard.
+func (g *Group) AddChain(ch *Chain) *Group {
+	g.members = append(g.members, groupMember{chain: ch, isChain: true})
 	return g
 }
 
@@ -94,6 +107,40 @@ func (g *Group) Enqueue(ctx context.Context, c *Client) (*GroupInfo, error) {
 	}
 	pending := make([]pendingMember, 0, len(g.members))
 	for i, m := range g.members {
+		memberSlot := memberIDs[i] // "<groupID>:m<i>"
+		if m.isChain {
+			msg, options, err := m.chain.snapshotForMember(memberSlot)
+			if err != nil {
+				return nil, fmt.Errorf("group member %d: %w", i, err)
+			}
+			// flat·ThenGroup 멤버 경로와 동일한 상한: 멤버 지연이 GroupTTL을 넘으면
+			// pending SET이 멤버 완료 보고 전에 만료되어 콜백이 조용히 미발화한다.
+			// 체인 멤버는 마지막 링크까지 진행한 뒤에야 그룹에 보고하고(AddChain 계약),
+			// pending SET TTL은 체인 링크 진행 중엔 갱신되지 않으므로 첫 링크뿐 아니라
+			// 모든 링크 지연의 합이 SET 생성~보고 창을 늘린다 — 합으로 검사한다.
+			memberDelay := time.Duration(0)
+			if !options.processAt.IsZero() {
+				memberDelay = time.Until(options.processAt)
+			}
+			for _, l := range msg.Chain {
+				if l.Delay > 0 {
+					memberDelay += time.Duration(l.Delay) * time.Second
+				}
+			}
+			if memberDelay > rdb.GroupTTL {
+				return nil, fmt.Errorf("group member %d: chain link delays exceed the group TTL (%v)", i, rdb.GroupTTL)
+			}
+			// 그룹 보고 필드: 마지막 링크까지 enqueueNext가 전파, 마지막 링크가 보고.
+			msg.GroupID = groupID
+			msg.GroupQueue = cbLink.Queue
+			msg.GroupCallback = &cbLink
+			msg.GroupIndex = i
+			msg.GroupSize = len(g.members)
+			msg.GroupMemberID = memberSlot
+			pending = append(pending, pendingMember{msg: msg, options: options})
+			continue
+		}
+		// --- 단일 태스크 경로 (m.args/m.opts) ---
 		options, err := resolveChainOptions(m.opts)
 		if err != nil {
 			return nil, fmt.Errorf("group member %d: %w", i, err)
@@ -110,7 +157,7 @@ func (g *Group) Enqueue(ctx context.Context, c *Client) (*GroupInfo, error) {
 		}
 		pending = append(pending, pendingMember{
 			msg: &base.TaskMessage{
-				ID:            memberIDs[i],
+				ID:            memberSlot,
 				Kind:          m.args.Kind(),
 				Payload:       payload,
 				Queue:         options.queue,

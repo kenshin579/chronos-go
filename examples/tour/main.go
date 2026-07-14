@@ -2,7 +2,8 @@
 // do: the core queue, reliability (retry / dead-letter), delayed + unique tasks,
 // the Inspector, the distributed scheduler with leader failover, the retention
 // janitor, the heartbeat, weighted priority queues, completed-task retention,
-// task chains, task groups, workflows (fan-out/fan-in with results), and queue
+// task chains, task groups, workflows (fan-out/fan-in with results), group
+// member chains (fan-out of pipelines), and queue
 // pause/resume. It is not a test — it is meant to be *watched*:
 // run it and read the output to see tasks being enqueued, processed, retried,
 // dead-lettered, delayed, deduplicated, scheduled across a leader hand-off,
@@ -119,6 +120,39 @@ func (TranslateArgs) Kind() string { return "tour:translate" }
 type MergeArgs struct{}
 
 func (MergeArgs) Kind() string { return "tour:merge" }
+
+// MigDump is the first link of a per-tenant migration chain (group member chain
+// demo): dump → transform → load, one chain per tenant, run in parallel.
+type MigDump struct {
+	Tenant string `json:"tenant"`
+}
+
+func (MigDump) Kind() string { return "tour:mig-dump" }
+
+// MigTransform is the migration chain's middle link.
+type MigTransform struct {
+	Tenant string `json:"tenant"`
+}
+
+func (MigTransform) Kind() string { return "tour:mig-transform" }
+
+// MigLoad is the migration chain's final link; it reports the member's result.
+type MigLoad struct {
+	Tenant string `json:"tenant"`
+}
+
+func (MigLoad) Kind() string { return "tour:mig-load" }
+
+// MigOut is the row count relayed dump → transform → load and collected by the
+// callback.
+type MigOut struct {
+	Rows int `json:"rows"`
+}
+
+// MigVerify is the group callback that fans in every tenant's migration result.
+type MigVerify struct{}
+
+func (MigVerify) Kind() string { return "tour:mig-verify" }
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
@@ -571,6 +605,48 @@ func main() {
 	shutRes, cancelRes := context.WithTimeout(context.Background(), 3*time.Second)
 	_ = resSrv.Shutdown(shutRes)
 	cancelRes()
+
+	section("16) 그룹 멤버 체인: 테넌트별 '덤프→변환→적재' 파이프라인을 병렬로, 전부 끝나면 검증")
+	migMux := chronos.NewMux()
+	chronos.AddHandlerR(migMux, func(ctx context.Context, t *chronos.Task[MigDump]) (MigOut, error) {
+		fmt.Printf("   ▶ [dump] %s\n", t.Args.Tenant)
+		return MigOut{Rows: len(t.Args.Tenant) * 10}, nil
+	})
+	chronos.AddHandlerR(migMux, func(ctx context.Context, t *chronos.Task[MigTransform]) (MigOut, error) {
+		prev, _ := chronos.PrevResult[MigOut](t)
+		fmt.Printf("   ▶ [transform] %s (%d rows)\n", t.Args.Tenant, prev.Rows)
+		return MigOut{Rows: prev.Rows}, nil
+	})
+	chronos.AddHandlerR(migMux, func(ctx context.Context, t *chronos.Task[MigLoad]) (MigOut, error) {
+		prev, _ := chronos.PrevResult[MigOut](t)
+		fmt.Printf("   ▶ [load] %s (%d rows)\n", t.Args.Tenant, prev.Rows)
+		return MigOut{Rows: prev.Rows}, nil
+	})
+	chronos.AddHandler(migMux, func(ctx context.Context, t *chronos.Task[MigVerify]) error {
+		rs, _ := chronos.GroupResults[MigOut](t)
+		total := 0
+		for _, r := range rs {
+			total += r.Rows
+		}
+		fmt.Printf("   ▶ [verify] 테넌트 %d개 마이그레이션 완료, 총 %d rows\n", len(rs), total)
+		return nil
+	})
+	migSrv := chronos.NewServer(rdb, chronos.ServerConfig{Queues: map[string]int{"mig": 1}, Concurrency: 4})
+	if err := migSrv.Start(ctx, migMux); err != nil {
+		fmt.Printf("mig 서버 start 실패: %v\n", err)
+	}
+	migG := chronos.NewGroup()
+	for _, tenant := range []string{"acme", "globex", "initech"} {
+		migG.AddChain(chronos.NewChain().
+			Then(MigDump{Tenant: tenant}, chronos.WithQueue("mig")).
+			Then(MigTransform{Tenant: tenant}, chronos.WithQueue("mig")).
+			Then(MigLoad{Tenant: tenant}, chronos.WithQueue("mig")))
+	}
+	_, _ = migG.OnComplete(MigVerify{}, chronos.WithQueue("mig")).Enqueue(ctx, client)
+	time.Sleep(3 * time.Second)
+	shutMig, cancelMig := context.WithTimeout(context.Background(), 3*time.Second)
+	_ = migSrv.Shutdown(shutMig)
+	cancelMig()
 
 	fmt.Println("\n───────────────────────────────────────────────")
 	fmt.Println("투어 완료. 위 로그가 chronos-go가 실제로 동작하는 모습입니다.")

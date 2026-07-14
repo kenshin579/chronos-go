@@ -475,7 +475,8 @@ func (s *Server) process(ctx context.Context, qname, streamID string, msg *base.
 		// first and crashed, the chain would be lost. The reverse order is safe
 		// because successor creation is idempotent (deterministic ID +
 		// create-if-absent), so a redelivery cannot duplicate it.
-		if len(msg.Chain) > 0 {
+		hadSuccessor := len(msg.Chain) > 0
+		if hadSuccessor {
 			if cerr := s.enqueueNextWithRetry(opCtx, msg); cerr != nil {
 				// Leave the task unacked: the recoverer will redeliver it, the
 				// (idempotent) handler runs again, and the successor enqueue is
@@ -495,7 +496,11 @@ func (s *Server) process(ctx context.Context, qname, streamID string, msg *base.
 		// chain rule and for the same reason: ack-then-crash must not lose the
 		// group's progress. The report is idempotent (SREM + create-if-absent
 		// callback), so redelivery cannot double-fire the callback.
-		if msg.GroupID != "" {
+		//
+		// 그룹 보고는 후속이 없는(= 마지막) 링크에서만. 체인 멤버의 중간 링크는
+		// 후속만 만들고 보고하지 않는다(조기 SREM 방지); flat 멤버·단일 링크 멤버·
+		// 멤버 체인의 마지막 링크만 보고한다.
+		if msg.GroupID != "" && !hadSuccessor {
 			if gerr := s.completeGroupWithRetry(opCtx, msg); gerr != nil {
 				s.logger.Error("chronos: group completion report failed; leaving task for redelivery",
 					"id", msg.ID, "group", msg.GroupID, "error", gerr)
@@ -589,6 +594,13 @@ func (s *Server) enqueueNext(ctx context.Context, msg *base.TaskMessage) error {
 		ChainID:    msg.ChainID,
 		ChainIndex: msg.ChainIndex + 1,
 		PrevResult: msg.Result, // 이번 링크의 결과를 후속에 릴레이
+		// 멤버 체인이면 그룹 보고 필드를 마지막 링크까지 실어나른다(빈 값이면 무해).
+		GroupID:       msg.GroupID,
+		GroupQueue:    msg.GroupQueue,
+		GroupCallback: msg.GroupCallback,
+		GroupIndex:    msg.GroupIndex,
+		GroupSize:     msg.GroupSize,
+		GroupMemberID: msg.GroupMemberID,
 	}
 	enqueued, err := s.rdb.EnqueueChainLink(ctx, next, time.Duration(link.Delay)*time.Second)
 	if err != nil {

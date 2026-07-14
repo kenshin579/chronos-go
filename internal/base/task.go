@@ -136,6 +136,12 @@ type TaskMessage struct {
 	// GroupSize is the group's member count, carried by every member so the
 	// completion script can assemble GroupResults in order.
 	GroupSize int `json:"group_size,omitempty"`
+	// GroupMemberID is the pending-SET entry this task reports against when it
+	// completes a group. For a flat member it equals the task's own ID and may
+	// be empty (CompleteGroupMember falls back to ID). For a chain member it is
+	// the member slot "<groupID>:m<j>", distinct from the terminal link's own
+	// ID "<groupID>:m<j>:<i>".
+	GroupMemberID string `json:"group_member_id,omitempty"`
 	// GroupCallbackChain is the chain tail the group's callback must inherit,
 	// carried by every member of a chain-embedded group stage. The completion
 	// script copies it onto the callback message (with ChainID/ChainIndex) so

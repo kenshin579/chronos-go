@@ -27,6 +27,7 @@ package chronos
 //  [x] pause/resume (global SET, consumption gate)          → TestCluster_PauseResume
 //  [x] 결과 릴레이 (chain PrevResult + group cjson 내장 Lua) → TestCluster_ResultRelay
 //  [x] ThenGroup (그룹 스테이지 — create-if-absent 펜스·결과 복제·꼬리 상속) → TestCluster_ThenGroup
+//  [x] 그룹 멤버 체인 (마지막 링크만 부모 보고, 링크가 다른 슬롯) → TestCluster_GroupMemberChain
 
 import (
 	"context"
@@ -855,3 +856,72 @@ func (clWfMerge) Kind() string { return "clwf:merge" }
 type clWfFinal struct{}
 
 func (clWfFinal) Kind() string { return "clwf:final" }
+
+// 그룹 멤버 체인: 멤버 체인의 링크들이 서로 다른 큐(다른 슬롯)에 있어도 마지막
+// 링크의 부모 보고가 CROSSSLOT 없이 동작하는지.
+func TestCluster_GroupMemberChain(t *testing.T) {
+	client := testutil.NewClusterRedis(t)
+	ctx := context.Background()
+
+	var cbGot atomic.Int64
+	mux := NewMux()
+	AddHandlerR(mux, func(ctx context.Context, task *Task[clMcA]) (clMcOut, error) {
+		return clMcOut{N: task.Args.N}, nil
+	})
+	AddHandlerR(mux, func(ctx context.Context, task *Task[clMcB]) (clMcOut, error) {
+		prev, _ := PrevResult[clMcOut](task)
+		return clMcOut{N: prev.N + 1}, nil
+	})
+	AddHandler(mux, func(ctx context.Context, task *Task[clMcCb]) error {
+		if rs, err := GroupResults[clMcOut](task); err == nil {
+			var sum int
+			for _, r := range rs {
+				sum += r.N
+			}
+			cbGot.Store(int64(sum))
+		}
+		return nil
+	})
+
+	srv := NewServer(client, ServerConfig{Queues: map[string]int{"clmc-a": 1, "clmc-b": 1}, Concurrency: 4})
+	if err := srv.Start(ctx, mux); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	// 멤버 2개, 각 체인은 A(clmc-a)→B(clmc-b) — 링크가 다른 슬롯.
+	g := NewGroup()
+	for _, n := range []int{10, 20} {
+		g.AddChain(NewChain().
+			Then(clMcA{N: n}, WithQueue("clmc-a")).
+			Then(clMcB{}, WithQueue("clmc-b")))
+	}
+	if _, err := g.OnComplete(clMcCb{}, WithQueue("clmc-b")).Enqueue(ctx, NewClient(client)); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	for cbGot.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if cbGot.Load() != 32 { // (10+1) + (20+1)
+		t.Errorf("callback sum = %d, want 32", cbGot.Load())
+	}
+}
+
+type clMcA struct {
+	N int `json:"n"`
+}
+
+func (clMcA) Kind() string { return "clmc:a" }
+
+type clMcB struct{}
+
+func (clMcB) Kind() string { return "clmc:b" }
+
+type clMcOut struct {
+	N int `json:"n"`
+}
+
+type clMcCb struct{}
+
+func (clMcCb) Kind() string { return "clmc:cb" }

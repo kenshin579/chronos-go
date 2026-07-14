@@ -269,6 +269,16 @@ func (w *Workload) tickers(ctx context.Context) {
 			if _, err := g.Enqueue(ctx, w.client); err != nil && ctx.Err() == nil {
 				log.Printf("soak: group enqueue: %v", err)
 			}
+			// 그룹 멤버 체인: 멤버 2개가 각각 2링크 체인.
+			gmc := chronos.NewGroup()
+			for k := 0; k < 2; k++ {
+				gmc.AddChain(chronos.NewChain().
+					Then(chainArgs{Seq: batch, Link: 0}, chronos.WithQueue("soak-a")).
+					Then(chainArgs{Seq: batch, Link: 1}, chronos.WithQueue("soak-b")))
+			}
+			if _, err := gmc.OnComplete(cbArgs{Seq: batch}, chronos.WithQueue("soak-a")).Enqueue(ctx, w.client); err != nil && ctx.Err() == nil {
+				log.Printf("soak: group-member-chain enqueue: %v", err)
+			}
 			batch++
 		}
 	}
