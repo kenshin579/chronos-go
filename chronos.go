@@ -1,4 +1,3 @@
-// Package chronos is a Redis-backed distributed scheduler and task queue.
 package chronos
 
 import (
