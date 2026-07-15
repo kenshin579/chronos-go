@@ -56,6 +56,9 @@ type ServerConfig struct {
 	// is empty, that round falls through to the highest-weight queue that does
 	// have work, so an idle high-priority queue never blocks lower ones. Weights
 	// <= 0 are treated as 1; very large weights are capped.
+	//
+	// At least one queue is required: there is no implicit default queue, and
+	// Start returns an error if Queues is empty.
 	Queues map[string]int
 	// StrictPriority, if true, always drains higher-weight queues first: a
 	// lower-weight queue is served only while every higher-weight queue is

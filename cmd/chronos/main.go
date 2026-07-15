@@ -2,7 +2,7 @@
 //
 //	chronos [--redis addr] [--db n] queue ls                       # standalone (default)
 //	chronos --cluster --redis n1:7000,n2:7001 queue ls             # Redis Cluster
-//	chronos [flags] queue pause  <queue>                            # stop consumption (~1s)
+//	chronos [flags] queue pause  <queue>                            # stop consumption (~1s); unknown names are accepted and stay paused until resume
 //	chronos [flags] queue resume <queue>
 //	chronos [flags] task ls   <queue> <scheduled|retry|archived|completed>
 //	chronos [flags] task run  <queue> <task-id>
