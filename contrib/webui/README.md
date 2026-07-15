@@ -1,5 +1,9 @@
 # chronos-go web console
 
+> **Experimental.** This contrib module is versioned separately and is **not**
+> covered by the core library's v1 stability guarantee. Its API and behavior
+> may change between releases.
+
 A browser-based **task-management console** for chronos-go, backed entirely by
 the public `chronos.Inspector`. It complements Grafana (metrics) and the CLI:
 
