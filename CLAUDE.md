@@ -66,5 +66,6 @@ The core idea: **immediate work rides a Redis Stream; everything time-based live
 ## Conventions
 
 - Branch from `main`; **never commit to `main` directly**. New features generally follow spec → plan → implementation (see `docs/superpowers/`).
+- **Write all Git/GitHub artifacts in English.** Commit messages, PR titles/bodies, and release notes must be in English (this is a public open-source project). Conversational replies may still be in Korean.
 - Test connection helper is `internal/testutil.NewRedis(t)` (standalone) / `NewClusterRedis(t)` (skips unless `REDIS_CLUSTER_ADDRS` is set).
 - Prefer a single atomic Lua script over multiple round-trips when an operation must be all-or-nothing across keys.
