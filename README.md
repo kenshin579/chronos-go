@@ -14,8 +14,8 @@ biggest gaps: a **distributed scheduler that runs each job once across many
 instances**, unbounded stream/dead-letter growth, and unique-lock expiry during
 long processing.
 
-> Status: **v0.x** — usable and covered by tests against real Redis, but the API
-> may still evolve before v1.0.0.
+> **v1.0.0** — the core package API is stable under semantic versioning. See
+> [Stability & compatibility](#stability--compatibility).
 
 ## Highlights
 
