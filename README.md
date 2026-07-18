@@ -14,8 +14,8 @@ biggest gaps: a **distributed scheduler that runs each job once across many
 instances**, unbounded stream/dead-letter growth, and unique-lock expiry during
 long processing.
 
-> Status: **v0.x** — usable and covered by tests against real Redis, but the API
-> may still evolve before v1.0.0.
+> **v1.0.0** — the core package API is stable under semantic versioning. See
+> [Stability & compatibility](#stability--compatibility).
 
 ## Highlights
 
@@ -423,18 +423,42 @@ crashes after finishing but before acking). **Make handlers idempotent.**
 | Stream / dead-letter growth | — | trimmed (`XDEL`) + janitor retention |
 | Backend | Redis | Redis |
 
+## Stability & compatibility
+
+From **v1.0.0**, the core package (`github.com/kenshin579/chronos-go`) follows
+[semantic versioning](https://semver.org): breaking changes to its public API
+land only in a new major version. APIs slated for removal are marked with a
+`// Deprecated:` godoc comment for at least one minor release first.
+
+Not covered by this guarantee: the `contrib/` modules (`contrib/webui`,
+`contrib/prometheus`) — experimental, versioned separately — and any `internal/`
+package. The core `Metrics` hook (zero dependencies) is part of the core API.
+
+Supported Go versions: the two most recent stable releases.
+
 ## Known limitations / roadmap
 
-- Scheduler fencing relies on a dedup-key TTL (no monotonic fencing token); a
-  leader paused longer than the TTL could theoretically re-enqueue a trigger.
-  All instances must share the same `Location` and reasonably synced clocks.
-- The unique lock is heartbeat-renewed only while a task is *actively
-  processing*; while it waits in the scheduled/retry set, it is covered by its
-  TTL — set the TTL comfortably above expected waiting time.
-- Nesting is one level deep: a group can be a chain stage (`ThenGroup`) and a
-  chain can be a group member (`AddChain`), but a second level — a member chain
-  that itself has a parallel (`ThenGroup`) stage, or a group whose member is
-  itself a group — is not supported.
+Delivery is **at-least-once** — a handler may run more than once (crash
+redelivery, or a recoverer reclaiming a task idle longer than `RecoverMinIdle`),
+so handlers must be idempotent.
+
+- **Scheduler fencing** relies on a dedup TTL (`10 × LeaderTTL`), not a fencing
+  token: a leader paused longer than that window and then resumed could double-
+  fire a trigger. Instances must share one clock and `Location`.
+- **Unique locks** cover in-flight tasks via heartbeat; a task waiting in the
+  retry/scheduled set is covered only by its lock TTL, so set the TTL to exceed
+  the task's total lifetime.
+- **Queue pause** takes effect within ~1s (server-side cache). `PauseQueue`
+  accepts any queue name; an unknown name lingers in the paused set until
+  `ResumeQueue` clears it (no effect on active queues).
+- **Workflow nesting is one level**: a group member may be a chain (`AddChain`),
+  and a chain may contain a parallel stage (`ThenGroup`), but not deeper (a
+  member chain cannot contain a `ThenGroup`, and a group cannot nest a group).
+- **Results** are capped at 1 MiB (`MaxResultSize`); pass a reference for larger
+  artifacts. Results are relay-only (no out-of-workflow result store).
+
+Roadmap (not yet built): asynq→chronos migration guide, official Sentinel
+support, deeper workflow nesting.
 
 ## Development
 

@@ -73,6 +73,10 @@ func (i *Inspector) Queues(ctx context.Context) ([]*QueueInfo, error) {
 
 // PauseQueue stops servers from consuming the queue (within about one second).
 // Enqueueing, forwarding and recovery continue — work accumulates as pending.
+//
+// The queue name is not validated: a name that does not exist is still
+// accepted and stays in the paused list until ResumeQueue clears it, with no
+// effect on any active queue.
 func (i *Inspector) PauseQueue(ctx context.Context, qname string) error {
 	return i.rdb.PauseQueue(ctx, qname)
 }
@@ -249,11 +253,19 @@ func (i *Inspector) SchedulerStatus(ctx context.Context) (*SchedulerStatus, erro
 }
 
 // RunTask promotes a scheduled/retry/archived task so it runs immediately.
+//
+// For a task that does not exist or has already been processed it is an
+// idempotent no-op and returns nil (unlike GetTask, it does not return
+// ErrTaskNotFound).
 func (i *Inspector) RunTask(ctx context.Context, qname, taskID string) error {
 	return i.rdb.RunTask(ctx, qname, taskID)
 }
 
 // DeleteTask removes a scheduled/retry/archived task and releases its unique lock.
+//
+// For a task that does not exist or has already been processed it is an
+// idempotent no-op and returns nil (unlike GetTask, it does not return
+// ErrTaskNotFound).
 func (i *Inspector) DeleteTask(ctx context.Context, qname, taskID string) error {
 	return i.rdb.DeleteTask(ctx, qname, taskID)
 }

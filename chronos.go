@@ -1,4 +1,3 @@
-// Package chronos is a Redis-backed distributed scheduler and task queue.
 package chronos
 
 import (
@@ -165,10 +164,12 @@ func WithQueue(name string) Option {
 	return optionFunc(func(o *enqueueOptions) { o.queue = name })
 }
 
-// WithTaskID sets an explicit task ID. Enforced deduplication is provided by
-// the unique lock introduced in a later milestone; in M1, re-enqueueing with
-// the same ID is not guaranteed to prevent duplicates. When omitted a random
-// UUID is generated.
+// WithTaskID sets an explicit task ID (used for lookup and correlation). When
+// omitted a random UUID is generated.
+//
+// This is not deduplication: enqueueing twice with the same ID does not reject
+// the second call — it may overwrite the existing task's body and enqueue it
+// again. For content-based duplicate suppression use WithUnique.
 func WithTaskID(id string) Option {
 	return optionFunc(func(o *enqueueOptions) { o.taskID = id })
 }
