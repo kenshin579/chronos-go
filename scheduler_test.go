@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/kenshin579/chronos-go/internal/testutil"
+	"github.com/redis/go-redis/v9"
+	cron "github.com/robfig/cron/v3"
 )
 
 type tickArgs struct {
@@ -109,5 +111,67 @@ func TestRegister_DistinctIDsForDifferentPayloads(t *testing.T) {
 	}
 	if s.entries[0].id == s.entries[1].id {
 		t.Errorf("same-kind+spec jobs with different payloads share id %q (would collide)", s.entries[0].id)
+	}
+}
+
+func newOfflineScheduler(loc *time.Location) *Scheduler {
+	// NewScheduler never dials; RegisterCron does no Redis I/O. A bare client keeps
+	// these schedule-parsing tests hermetic (no live Redis, no t.Skip).
+	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:0"})
+	return NewScheduler(client, SchedulerConfig{Location: loc})
+}
+
+func TestRegisterCron_HonorsSchedulerLocation(t *testing.T) {
+	seoul, err := time.LoadLocation("Asia/Seoul")
+	if err != nil {
+		t.Fatalf("load Asia/Seoul: %v", err)
+	}
+	s := newOfflineScheduler(seoul)
+	if err := RegisterCron(s, "0 5 * * *", tickArgs{}); err != nil {
+		t.Fatalf("RegisterCron: %v", err)
+	}
+	ss, ok := s.entries[0].schedule.(*cron.SpecSchedule)
+	if !ok {
+		t.Fatalf("schedule type = %T, want *cron.SpecSchedule", s.entries[0].schedule)
+	}
+	if ss.Location != seoul {
+		t.Errorf("schedule Location = %v, want Asia/Seoul", ss.Location)
+	}
+	// Behavior: 0 5 * * * must fire at 05:00 KST (= 20:00 UTC), not 05:00 UTC.
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	next := s.entries[0].schedule.Next(base)
+	if h := next.In(seoul).Hour(); h != 5 {
+		t.Errorf("next fire hour in KST = %d, want 5", h)
+	}
+	if h := next.UTC().Hour(); h != 20 {
+		t.Errorf("next fire hour in UTC = %d, want 20 (05:00 KST)", h)
+	}
+}
+
+func TestRegisterCron_PreservesExplicitCronTZ(t *testing.T) {
+	seoul, _ := time.LoadLocation("Asia/Seoul")
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("load America/New_York: %v", err)
+	}
+	s := newOfflineScheduler(seoul)
+	if err := RegisterCron(s, "CRON_TZ=America/New_York 0 5 * * *", tickArgs{}); err != nil {
+		t.Fatalf("RegisterCron: %v", err)
+	}
+	ss := s.entries[0].schedule.(*cron.SpecSchedule)
+	if ss.Location.String() != ny.String() {
+		t.Errorf("explicit CRON_TZ overridden: Location = %v, want America/New_York", ss.Location)
+	}
+}
+
+func TestRegisterCron_DefaultLocationUnchanged(t *testing.T) {
+	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:0"})
+	s := NewScheduler(client, SchedulerConfig{})
+	if err := RegisterCron(s, "0 5 * * *", tickArgs{}); err != nil {
+		t.Fatalf("RegisterCron: %v", err)
+	}
+	ss := s.entries[0].schedule.(*cron.SpecSchedule)
+	if ss.Location != time.Local {
+		t.Errorf("default Location = %v, want time.Local", ss.Location)
 	}
 }

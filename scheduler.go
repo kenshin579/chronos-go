@@ -119,6 +119,14 @@ func RegisterCron[T TaskArgs](s *Scheduler, spec string, args T, opts ...Option)
 	if err != nil {
 		return fmt.Errorf("chronos: invalid cron spec %q: %w", spec, err)
 	}
+	// robfig/cron defaults SpecSchedule.Location to time.Local for a spec without a
+	// CRON_TZ=/TZ= prefix, and SpecSchedule.Next evaluates in that Location — so
+	// SchedulerConfig.Location would otherwise be ignored. Apply cfg.Location when the
+	// spec did not set its own zone (an explicit CRON_TZ leaves Location != time.Local
+	// and is preserved).
+	if ss, ok := sched.(*cron.SpecSchedule); ok && ss.Location == time.Local {
+		ss.Location = s.cfg.Location
+	}
 	payload, err := encodeArgs(args)
 	if err != nil {
 		return err
