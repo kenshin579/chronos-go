@@ -20,7 +20,9 @@ import (
 
 // SchedulerConfig configures a Scheduler.
 type SchedulerConfig struct {
-	// Location is the timezone for cron schedules. Defaults to time.Local.
+	// Location is the timezone in which cron schedules are evaluated. Defaults to
+	// time.Local. A CRON_TZ=/TZ= prefix on an individual spec takes precedence over
+	// this for that schedule.
 	Location *time.Location
 	// Logger receives operational logs. Defaults to slog.Default().
 	Logger *slog.Logger
@@ -124,6 +126,8 @@ func RegisterCron[T TaskArgs](s *Scheduler, spec string, args T, opts ...Option)
 	// SchedulerConfig.Location would otherwise be ignored. Apply cfg.Location when the
 	// spec did not set its own zone (an explicit CRON_TZ leaves Location != time.Local
 	// and is preserved).
+	// (A spec that explicitly asks for CRON_TZ=Local is indistinguishable from a
+	// no-zone spec and will use cfg.Location — an acceptable corner case.)
 	if ss, ok := sched.(*cron.SpecSchedule); ok && ss.Location == time.Local {
 		ss.Location = s.cfg.Location
 	}
