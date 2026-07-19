@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/kenshin579/chronos-go/actions/workflows/ci.yml/badge.svg)](https://github.com/kenshin579/chronos-go/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/kenshin579/chronos-go.svg)](https://pkg.go.dev/github.com/kenshin579/chronos-go)
+[![Docs](https://img.shields.io/badge/docs-chronos--go.advenoh.pe.kr-6366f1)](https://chronos-go.advenoh.pe.kr)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A Redis-backed **distributed task queue and scheduler** for Go, with a
@@ -16,6 +17,9 @@ long processing.
 
 > **v1.0.0** — the core package API is stable under semantic versioning. See
 > [Stability & compatibility](#stability--compatibility).
+
+📖 **Documentation** — guides and recipes (English & Korean) at
+**[chronos-go.advenoh.pe.kr](https://chronos-go.advenoh.pe.kr)**.
 
 ## Highlights
 
