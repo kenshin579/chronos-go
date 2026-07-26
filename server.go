@@ -785,6 +785,15 @@ func (s *Server) observe(msg *base.TaskMessage, outcome TaskOutcome, dur time.Du
 	}
 }
 
+// observeRecovered reports one recoverer sweep to the configured Metrics when it
+// also implements RecoveryMetrics (no-op otherwise). A nil Metrics fails the
+// type assertion, so this is safe when observation is disabled.
+func (s *Server) observeRecovered(queue string, recovered, deadLettered int) {
+	if rm, ok := s.cfg.Metrics.(RecoveryMetrics); ok {
+		rm.ObserveRecovered(queue, recovered, deadLettered)
+	}
+}
+
 // dispatchSafely runs the handler and converts a panic into an error so a
 // misbehaving handler cannot crash the worker.
 func (s *Server) dispatchSafely(ctx context.Context, msg *base.TaskMessage) (err error) {
@@ -848,6 +857,8 @@ func (s *Server) forwarderLoop(ctx context.Context) {
 
 // recovererLoop periodically reclaims tasks stuck in each queue's PEL (crashed
 // workers) and fires OnDeadLetter for any that are dead-lettered as a result.
+// Each sweep is reported to RecoveryMetrics when the configured Metrics
+// implements it.
 func (s *Server) recovererLoop(ctx context.Context) {
 	defer s.wg.Done()
 	ticker := time.NewTicker(s.cfg.RecoverInterval)
@@ -859,7 +870,7 @@ func (s *Server) recovererLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			for _, q := range queues {
-				_, archived, err := s.rdb.Recover(ctx, q, s.consumer, s.cfg.RecoverMinIdle, recoverBatchSize)
+				recovered, archived, err := s.rdb.Recover(ctx, q, s.consumer, s.cfg.RecoverMinIdle, recoverBatchSize)
 				if err != nil {
 					if ctx.Err() != nil {
 						return
@@ -874,6 +885,11 @@ func (s *Server) recovererLoop(ctx context.Context) {
 							errRecoveredExhausted)
 					}
 				}
+				// Reported even when the sweep reclaimed nothing: a (0, 0) sweep
+				// is how an implementation tells an idle recoverer apart from one
+				// that is not running. A failed sweep continues above instead, so
+				// it never reports a spurious zero.
+				s.observeRecovered(q, recovered, len(archived))
 			}
 		}
 	}
