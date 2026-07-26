@@ -41,8 +41,8 @@ func TestMetrics_ObserveRecovered_CountsByOutcome(t *testing.T) {
 	const want = `
 # HELP chronos_tasks_recovered_total Total tasks reclaimed from crashed workers, by queue and outcome.
 # TYPE chronos_tasks_recovered_total counter
-chronos_tasks_recovered_total{outcome="dead_lettered",queue="default"} 1
-chronos_tasks_recovered_total{outcome="dead_lettered",queue="low"} 3
+chronos_tasks_recovered_total{outcome="dead_letter",queue="default"} 1
+chronos_tasks_recovered_total{outcome="dead_letter",queue="low"} 3
 chronos_tasks_recovered_total{outcome="requeued",queue="default"} 3
 chronos_tasks_recovered_total{outcome="requeued",queue="low"} 0
 `
@@ -63,7 +63,7 @@ func TestMetrics_ObserveRecovered_ZeroSweepEmitsSeries(t *testing.T) {
 	const want = `
 # HELP chronos_tasks_recovered_total Total tasks reclaimed from crashed workers, by queue and outcome.
 # TYPE chronos_tasks_recovered_total counter
-chronos_tasks_recovered_total{outcome="dead_lettered",queue="default"} 0
+chronos_tasks_recovered_total{outcome="dead_letter",queue="default"} 0
 chronos_tasks_recovered_total{outcome="requeued",queue="default"} 0
 `
 	if err := testutil.CollectAndCompare(m.recovered, strings.NewReader(want)); err != nil {

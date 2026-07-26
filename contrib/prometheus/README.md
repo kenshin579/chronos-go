@@ -29,7 +29,7 @@ reclaimed from a crashed worker's pending list:
 | `outcome` | meaning |
 |---|---|
 | `requeued` | reclaimed and made available for another attempt |
-| `dead_lettered` | reclaimed with the retry budget already exhausted, so archived without ever reaching a handler |
+| `dead_letter` | reclaimed with the retry budget already exhausted, so archived without ever reaching a handler |
 
 There is no `kind` label: the recoverer reports a count for requeued tasks, not
 the messages, so the kind is not knowable for that half.
@@ -43,7 +43,21 @@ one that is busy.
 `chronos_tasks_processed_total{outcome="dead_letter"}` counts only tasks that
 failed through a handler. A task dead-lettered by the recoverer never reached a
 handler and has no duration, so it appears **only** as
-`chronos_tasks_recovered_total{outcome="dead_lettered"}`. Alert on both to cover
-every abandoned task.
+`chronos_tasks_recovered_total{outcome="dead_letter"}`. The label value is
+spelled the same in both families, but they are separate metrics — union them
+explicitly to count every abandoned task:
+
+```promql
+(sum(increase(chronos_tasks_processed_total{outcome="dead_letter"}[5m])) or vector(0))
++ (sum(increase(chronos_tasks_recovered_total{outcome="dead_letter"}[5m])) or vector(0))
+```
+
+`or vector(0)` on each operand is not optional: a bare `+` returns no data
+whenever either side has no series yet — which is the normal state before the
+first handler-path dead-letter — so the panel would read "No data" instead of
+`0`. It is safe here only because both operands are bare `sum()` with no `by`
+clause, so the zero-label `vector(0)` matches.
+
+The dashboard in [`deploy/`](deploy) uses exactly this query.
 
 A ready-to-run Prometheus + Grafana stack lives in [`deploy/`](deploy).

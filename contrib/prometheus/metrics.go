@@ -16,9 +16,11 @@ const (
 	// outcomeRequeued: the task was reclaimed from a crashed worker and made
 	// available for another attempt.
 	outcomeRequeued = "requeued"
-	// outcomeDeadLettered: the task was reclaimed with its retry budget already
-	// exhausted and archived without ever reaching a handler.
-	outcomeDeadLettered = "dead_lettered"
+	// outcomeDeadLetter: the task was reclaimed with its retry budget already
+	// exhausted and archived without ever reaching a handler. Spelled exactly
+	// like chronos.OutcomeDeadLetter so one concept has one spelling across both
+	// metric families.
+	outcomeDeadLetter = string(chronos.OutcomeDeadLetter)
 )
 
 var (
@@ -70,5 +72,5 @@ func (m *Metrics) ObserveTask(queue, kind string, outcome chronos.TaskOutcome, d
 // running and finding nothing from one that is not running at all.
 func (m *Metrics) ObserveRecovered(queue string, recovered, deadLettered int) {
 	m.recovered.WithLabelValues(queue, outcomeRequeued).Add(float64(recovered))
-	m.recovered.WithLabelValues(queue, outcomeDeadLettered).Add(float64(deadLettered))
+	m.recovered.WithLabelValues(queue, outcomeDeadLetter).Add(float64(deadLettered))
 }
