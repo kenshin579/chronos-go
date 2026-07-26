@@ -33,10 +33,11 @@
     },
     {
       "type": "stat",
-      "title": "Dead-letters (5m)",
+      "title": "Dead-letters (5m, handler + recoverer)",
+      "description": "Tasks abandoned in the last 5m, from both paths: failed through a handler (chronos_tasks_processed_total) and reclaimed from a crashed worker with the retry budget already exhausted (chronos_tasks_recovered_total). Each operand is wrapped in `or vector(0)` because a bare `+` yields no data whenever either side has no series yet, which would hide the count instead of showing 0.",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
       "targets": [
-        { "expr": "sum(increase(chronos_tasks_processed_total{outcome=\"dead_letter\"}[5m]))" }
+        { "expr": "(sum(increase(chronos_tasks_processed_total{outcome=\"dead_letter\"}[5m])) or vector(0)) + (sum(increase(chronos_tasks_recovered_total{outcome=\"dead_letter\"}[5m])) or vector(0))" }
       ]
     }
   ]
