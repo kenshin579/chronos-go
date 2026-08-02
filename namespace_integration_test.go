@@ -124,9 +124,36 @@ func TestNamespaceIsolatesEnqueue(t *testing.T) {
 		t.Fatalf("enqueue into A: %v", err)
 	}
 
+	// Assert the positive direction first. Without it the negative assertion
+	// below is vacuous: if Queues ever returned nothing at all, "B sees no
+	// pending tasks" would pass while proving nothing.
+	pendingIn := func(qs []*QueueInfo, name string) (int64, bool) {
+		for _, q := range qs {
+			if q.Queue == name {
+				return q.Pending, true
+			}
+		}
+		return 0, false
+	}
+
+	qsA, err := nsA.NewInspector().Queues(ctx)
+	if err != nil {
+		t.Fatalf("inspector A queues: %v", err)
+	}
+	pending, found := pendingIn(qsA, "shared")
+	if !found {
+		t.Fatalf("namespace A does not see queue %q it just enqueued into", "shared")
+	}
+	if pending != 1 {
+		t.Fatalf("namespace A sees %d pending task(s) in %q, want 1", pending, "shared")
+	}
+
 	qsB, err := nsB.NewInspector().Queues(ctx)
 	if err != nil {
 		t.Fatalf("inspector B queues: %v", err)
+	}
+	if _, found := pendingIn(qsB, "shared"); found {
+		t.Errorf("namespace B sees queue %q, which only namespace A wrote to", "shared")
 	}
 	for _, q := range qsB {
 		if q.Pending > 0 {
