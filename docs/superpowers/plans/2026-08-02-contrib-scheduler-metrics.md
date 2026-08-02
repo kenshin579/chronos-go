@@ -675,10 +675,22 @@ func NewSchedulerCollector(insp *chronos.Inspector) *SchedulerCollector {
 		// A unix timestamp rather than an age: an age baked in at scrape time
 		// drifts with the scrape interval. Compute the age in the query with
 		// time() - <metric>.
+		//
+		// id is what makes the series unique and must not be dropped. A
+		// schedule's identity is ScheduleInfo.ID (<kind>:<spec>#<hash>, the hash
+		// covering queue and payload) — kind alone is not an identity: one kind
+		// can carry several specs, and fire-history-only entries have kind "".
+		// Two such schedules would emit the same (kind, queue) pair, Gather()
+		// would reject the duplicate, and promhttp would answer 500 for the
+		// entire scrape — taking chronos_collector_up down with it, the one
+		// metric that exists to stay visible when things break.
+		//
+		// The label is free to the deployed dashboard, whose only query is
+		// max by (kind) (time() - <metric>): by (kind) collapses everything else.
 		lastFired: prometheus.NewDesc(
 			"chronos_schedule_last_fired_timestamp_seconds",
 			"Unix time a schedule last fired.",
-			[]string{"kind", "queue"}, nil,
+			[]string{"id", "kind", "queue"}, nil,
 		),
 		// Unlabelled and aggregate on purpose. A per-schedule gauge would be more
 		// precise, but this is the shape deployed alerts already query
@@ -744,7 +756,7 @@ func (c *SchedulerCollector) Collect(ch chan<- prometheus.Metric) {
 		}
 		ch <- prometheus.MustNewConstMetric(
 			c.lastFired, prometheus.GaugeValue,
-			float64(s.LastFired.Unix()), s.Kind, s.Queue,
+			float64(s.LastFired.Unix()), s.ID, s.Kind, s.Queue,
 		)
 	}
 	ch <- prometheus.MustNewConstMetric(c.stale, prometheus.GaugeValue, anyStale)
@@ -803,7 +815,7 @@ func TestMetricNamesAndLabels(t *testing.T) {
 		`chronos_collector_up|`,
 		`chronos_queue_paused|queue`,
 		`chronos_queue_tasks|queue,state`,
-		`chronos_schedule_last_fired_timestamp_seconds|kind,queue`,
+		`chronos_schedule_last_fired_timestamp_seconds|id,kind,queue`,
 		`chronos_schedule_stale|`,
 		`chronos_scheduler_leader|leader_id`,
 		`chronos_task_duration_seconds|queue,kind`,

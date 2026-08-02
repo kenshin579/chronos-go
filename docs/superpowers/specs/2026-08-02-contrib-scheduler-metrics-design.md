@@ -132,9 +132,20 @@ A new collector reads `Inspector.SchedulerStatus()` at scrape time:
 
 | metric | type | labels | source |
 |---|---|---|---|
-| `chronos_schedule_last_fired_timestamp_seconds` | gauge | `kind`, `queue` | `ScheduleInfo.LastFired` |
+| `chronos_schedule_last_fired_timestamp_seconds` | gauge | `id`, `kind`, `queue` | `ScheduleInfo.LastFired` |
 | `chronos_schedule_stale` | gauge | — | 1 if any `ScheduleInfo.Stale` |
 | `chronos_scheduler_leader` | gauge | `leader_id` | `SchedulerStatus.LeaderID` |
+
+`chronos_schedule_last_fired_timestamp_seconds` carries `id` because that — not
+`kind` — is a schedule's identity (`ScheduleInfo.ID` is `<kind>:<spec>#<hash>`,
+the hash covering queue and payload). One kind can carry several specs, and
+fire-history-only entries all have `kind == ""`, so `(kind, queue)` alone
+produces duplicate label sets; `Gather()` rejects those and promhttp returns 500
+for the *entire* scrape, hiding every chronos metric including
+`chronos_collector_up`. The label looks redundant next to `kind` and is not:
+removing it reintroduces the outage. It costs the deployed dashboard nothing,
+whose only query is `max by (kind) (time() - metric)` — `by (kind)` collapses
+every other label, so the panel is identical with or without `id`.
 
 `chronos_schedule_stale` is deliberately unlabelled and aggregate. A per-schedule
 version would be more precise, but the deployed alert is `max(chronos_schedule_stale) > 0`
