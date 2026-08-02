@@ -10,6 +10,11 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// DefaultPrefix mirrors internal/base.DefaultPrefix. The soak deliberately
+// observes Redis from the outside (see docs/OBSERVING.md), so it cannot import
+// the internal key builders — keep this in sync with internal/base/keys.go.
+const DefaultPrefix = "chronos"
+
 // Sampler collects one Sample per call. Key patterns are the stable layout
 // documented in docs/OBSERVING.md — the soak intentionally observes Redis
 // from the outside, like an operator would.
@@ -17,15 +22,24 @@ type Sampler struct {
 	rdb       redis.UniversalClient
 	queues    []string
 	completed *atomic.Int64 // shared with the workload's handlers
+	prefix    string
 
 	start    time.Time
 	prevDone int64
 	prevAt   time.Time
 }
 
+// NewSampler returns a Sampler reading the default key layout.
 func NewSampler(rdb redis.UniversalClient, queues []string, completed *atomic.Int64) *Sampler {
+	return NewSamplerWithPrefix(rdb, queues, completed, DefaultPrefix)
+}
+
+// NewSamplerWithPrefix returns a Sampler reading keys scoped under prefix — the
+// layout a chronos.Namespace writes. Sampling the wrong prefix reports zeros,
+// not an error, so the prefix must match the workload's.
+func NewSamplerWithPrefix(rdb redis.UniversalClient, queues []string, completed *atomic.Int64, prefix string) *Sampler {
 	now := time.Now()
-	return &Sampler{rdb: rdb, queues: queues, completed: completed, start: now, prevAt: now}
+	return &Sampler{rdb: rdb, queues: queues, completed: completed, prefix: prefix, start: now, prevAt: now}
 }
 
 // Collect gathers process and Redis stats. It forces a GC first so HeapAlloc
@@ -54,7 +68,7 @@ func (s *Sampler) Collect(ctx context.Context) (Sample, error) {
 		return out, fmt.Errorf("dbsize: %w", err)
 	}
 	for _, q := range s.queues {
-		p := "chronos:{" + q + "}:"
+		p := s.prefix + ":{" + q + "}:"
 		n, err := s.rdb.XLen(ctx, p+"stream").Result()
 		if err != nil {
 			return out, fmt.Errorf("xlen %s: %w", q, err)
@@ -74,14 +88,14 @@ func (s *Sampler) Collect(ctx context.Context) (Sample, error) {
 			*fam.dst += n
 		}
 	}
-	if out.Unique, err = scanCount(ctx, s.rdb, "chronos:*:unique:*"); err != nil {
+	if out.Unique, err = scanCount(ctx, s.rdb, s.prefix+":*:unique:*"); err != nil {
 		return out, err
 	}
 	// group:*(pending SET)과 groupresult:*(수집 HASH)를 함께 센다.
-	if out.Groups, err = scanCount(ctx, s.rdb, "chronos:*:group*"); err != nil {
+	if out.Groups, err = scanCount(ctx, s.rdb, s.prefix+":*:group*"); err != nil {
 		return out, err
 	}
-	if out.Schedules, err = s.rdb.HLen(ctx, "chronos:schedules").Result(); err != nil {
+	if out.Schedules, err = s.rdb.HLen(ctx, s.prefix+":schedules").Result(); err != nil {
 		return out, fmt.Errorf("hlen schedules: %w", err)
 	}
 	s.prevDone, s.prevAt = done, now

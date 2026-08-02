@@ -10,7 +10,9 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-func TestSamplerCollect(t *testing.T) {
+// testRedis returns a flushed DB 15 client, skipping if Redis is unreachable.
+func testRedis(t *testing.T) (*redis.Client, context.Context) {
+	t.Helper()
 	addr := os.Getenv("REDIS_ADDR")
 	if addr == "" {
 		addr = "127.0.0.1:6379"
@@ -22,16 +24,27 @@ func TestSamplerCollect(t *testing.T) {
 	}
 	t.Cleanup(func() { rdb.FlushDB(ctx); rdb.Close() })
 	rdb.FlushDB(ctx)
+	return rdb, ctx
+}
+
+// seed writes one key per family the sampler counts, under prefix.
+func seed(ctx context.Context, rdb *redis.Client, prefix string) {
+	a, b := prefix+":{soak-a}:", prefix+":{soak-b}:"
+	rdb.XAdd(ctx, &redis.XAddArgs{Stream: a + "stream", Values: map[string]any{"task_id": "t1"}})
+	rdb.ZAdd(ctx, a+"retry", redis.Z{Score: 1, Member: "t2"})
+	rdb.ZAdd(ctx, b+"scheduled", redis.Z{Score: 1, Member: "t3"})
+	rdb.ZAdd(ctx, a+"archived", redis.Z{Score: 1, Member: "t4"})
+	rdb.ZAdd(ctx, b+"completed", redis.Z{Score: 1, Member: "t5"})
+	rdb.Set(ctx, a+"unique:soak:task:abc", "t6", 0)
+	rdb.SAdd(ctx, a+"group:g1", "m1")
+	rdb.HSet(ctx, prefix+":schedules", "soak:sched:@every 1s", "{}")
+}
+
+func TestSamplerCollect(t *testing.T) {
+	rdb, ctx := testRedis(t)
 
 	// 패밀리별 키를 심는다 (soak가 세는 모든 패턴).
-	rdb.XAdd(ctx, &redis.XAddArgs{Stream: "chronos:{soak-a}:stream", Values: map[string]any{"task_id": "t1"}})
-	rdb.ZAdd(ctx, "chronos:{soak-a}:retry", redis.Z{Score: 1, Member: "t2"})
-	rdb.ZAdd(ctx, "chronos:{soak-b}:scheduled", redis.Z{Score: 1, Member: "t3"})
-	rdb.ZAdd(ctx, "chronos:{soak-a}:archived", redis.Z{Score: 1, Member: "t4"})
-	rdb.ZAdd(ctx, "chronos:{soak-b}:completed", redis.Z{Score: 1, Member: "t5"})
-	rdb.Set(ctx, "chronos:{soak-a}:unique:soak:task:abc", "t6", 0)
-	rdb.SAdd(ctx, "chronos:{soak-a}:group:g1", "m1")
-	rdb.HSet(ctx, "chronos:schedules", "soak:sched:@every 1s", "{}")
+	seed(ctx, rdb, DefaultPrefix)
 
 	var done atomic.Int64
 	done.Store(100)
@@ -61,5 +74,40 @@ func TestSamplerCollect(t *testing.T) {
 	}
 	if got2.Throughput != 0 {
 		t.Errorf("second throughput %v, want 0", got2.Throughput)
+	}
+}
+
+// TestSamplerPrefix pins the prefix down in both directions. A sampler reading
+// the wrong prefix reports zeros rather than an error — the worst failure mode
+// for a leak detector, since a soak run would look perfectly clean while the
+// keys pile up under the namespace nobody is watching.
+func TestSamplerPrefix(t *testing.T) {
+	rdb, ctx := testRedis(t)
+	seed(ctx, rdb, "otherapp")
+
+	var done atomic.Int64
+	queues := []string{"soak-a", "soak-b"}
+
+	// Matching prefix: every family is found.
+	match, err := NewSamplerWithPrefix(rdb, queues, &done, "otherapp").Collect(ctx)
+	if err != nil {
+		t.Fatalf("collect matching prefix: %v", err)
+	}
+	if match.Stream != 1 || match.Retry != 1 || match.Scheduled != 1 || match.Archived != 1 ||
+		match.Completed != 1 || match.Unique != 1 || match.Groups != 1 || match.Schedules != 1 {
+		t.Errorf("matching prefix counted %+v, want 1 per family", match)
+	}
+
+	// Default prefix against otherapp's keys: nothing belongs to us.
+	miss, err := NewSampler(rdb, queues, &done).Collect(ctx)
+	if err != nil {
+		t.Fatalf("collect default prefix: %v", err)
+	}
+	if miss.Stream != 0 || miss.Retry != 0 || miss.Scheduled != 0 || miss.Archived != 0 ||
+		miss.Completed != 0 || miss.Unique != 0 || miss.Groups != 0 || miss.Schedules != 0 {
+		t.Errorf("default prefix counted %+v of another namespace's keys, want all zero", miss)
+	}
+	if miss.DBSize == 0 {
+		t.Error("DBSize is 0, so the seed never landed and the zeros above prove nothing")
 	}
 }
