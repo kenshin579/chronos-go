@@ -412,6 +412,38 @@ cd deploy/redis-cluster && docker compose up -d && cd ../..
 make test-cluster
 ```
 
+## Sharing a Redis database
+
+By default every key is prefixed `chronos:`. Two chronos-go deployments on the
+same Redis database therefore collide — most damagingly on `chronos:leader`, the
+single lock that decides which process fires schedules. The loser stops firing
+and nothing is logged. Give each deployment its own namespace:
+
+```go
+ns := chronos.NewNamespace(rdb, "inspireme")
+
+client := ns.NewClient()
+srv := ns.NewServer(chronos.ServerConfig{Queues: map[string]int{"default": 1}})
+sched := ns.NewScheduler(chronos.SchedulerConfig{})
+insp := ns.NewInspector()
+```
+
+Derive all four from one `Namespace`. Setting a prefix on some and not others
+produces tasks that are enqueued but never processed, with no error anywhere.
+
+The prefix must not contain braces (they break the Redis Cluster hash tag),
+glob metacharacters, or whitespace; `NewNamespace` panics on those. A prefix
+works identically on standalone and Cluster, which a separate logical database
+does not — Cluster has only DB 0.
+
+The package-level `NewClient` / `NewServer` / `NewScheduler` / `NewInspector`
+are equivalent to the default `chronos` prefix, so existing deployments are
+unaffected and need no migration.
+
+**Changing the prefix of a running deployment requires draining in-flight tasks
+first.** A task's unique-lock key is stored in its body, so a task enqueued
+under one prefix cannot have its lock released under another.
+
 ## Delivery semantics
 
 chronos-go is **at-least-once**: a task can run more than once (e.g. a worker

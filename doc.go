@@ -41,6 +41,16 @@
 // reports scheduler state — the read/operate surface behind the CLI and web
 // console.
 //
+// # Sharing a Redis database
+//
+// Every key is prefixed "chronos:" by default, so two deployments on one Redis
+// database collide — most damagingly on the scheduler leader lock, where the
+// loser silently stops firing its schedules. [NewNamespace] scopes the whole
+// key layout under a prefix, and the Client, Server, Scheduler and Inspector
+// derived from one [Namespace] are guaranteed to agree on it. The package-level
+// constructors are the default prefix, so existing deployments need no
+// migration.
+//
 // # Delivery semantics
 //
 // Delivery is at-least-once: a handler may run more than once (redelivery after
