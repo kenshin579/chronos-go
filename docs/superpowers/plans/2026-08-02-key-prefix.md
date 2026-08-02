@@ -1501,7 +1501,7 @@ EOF
 
 **Stop after opening the PR and report.** Merging is the user's decision.
 
-Releasing is out of scope for this plan. The design targets **v1.1.0** (additive,
+Releasing is out of scope for this plan. The design targets **v1.2.0** (additive,
 no breaking change); tagging happens after merge. There is no CHANGELOG file in
 this repo, so nothing to update.
 

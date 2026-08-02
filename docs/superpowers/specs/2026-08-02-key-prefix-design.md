@@ -288,7 +288,11 @@ namespaces cannot collide on it.
 
 ## Versioning
 
-**v1.1.0** — additive, no breaking change. The v1 prep design
+**v1.2.0** — additive, no breaking change. The v1 prep design
 (`docs/superpowers/specs/2026-07-15-v1-prep-design.md`) classifies additive
 improvements as v1.x backlog, and the default prefix keeps the public behaviour
-identical.
+identical: all four public constructors are unchanged byte-for-byte, and
+`TestDefaultKeysUnchanged` asserts the key layout is too.
+
+(This section originally said v1.1.0, written without checking the tag list.
+v1.1.0 was already released on `f2c3eaa`, so this work lands as v1.2.0.)
