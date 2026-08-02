@@ -23,7 +23,7 @@ import (
 // This is the at-least-once contract; set minIdle comfortably above expected
 // handler duration.
 func (r *RDB) Recover(ctx context.Context, qname, consumer string, minIdle time.Duration, max int) (recovered int, archived []*base.TaskMessage, err error) {
-	streamKey := base.StreamKey(qname)
+	streamKey := r.keys.StreamKey(qname)
 
 	msgs, _, err := r.client.XAutoClaim(ctx, &redis.XAutoClaimArgs{
 		Stream:   streamKey,
@@ -46,7 +46,7 @@ func (r *RDB) Recover(ctx context.Context, qname, consumer string, minIdle time.
 	for _, m := range msgs {
 		taskID, _ := m.Values["task_id"].(string)
 
-		raw, err := r.client.HGet(ctx, base.TaskKey(qname, taskID), "msg").Result()
+		raw, err := r.client.HGet(ctx, r.keys.TaskKey(qname, taskID), "msg").Result()
 		if err == redis.Nil {
 			// Body already gone: drop the orphan entry (ack + delete) so it does
 			// not linger in the stream and inflate the pending count.

@@ -5,8 +5,6 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-
-	"github.com/kenshin579/chronos-go/internal/base"
 )
 
 // ExtendLease resets the idle time of in-flight PEL entries by re-claiming them
@@ -18,7 +16,7 @@ func (r *RDB) ExtendLease(ctx context.Context, qname, consumer string, streamIDs
 		return nil
 	}
 	return r.client.XClaimJustID(ctx, &redis.XClaimArgs{
-		Stream:   base.StreamKey(qname),
+		Stream:   r.keys.StreamKey(qname),
 		Group:    ConsumerGroup,
 		Consumer: consumer,
 		MinIdle:  0,

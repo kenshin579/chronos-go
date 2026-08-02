@@ -51,7 +51,7 @@ func (r *RDB) registerQueue(ctx context.Context, qname string) error {
 	if _, ok := r.knownQueues.Load(qname); ok {
 		return nil
 	}
-	if err := r.client.SAdd(ctx, base.QueuesKey(), qname).Err(); err != nil {
+	if err := r.client.SAdd(ctx, r.keys.QueuesKey(), qname).Err(); err != nil {
 		return err
 	}
 	r.knownQueues.Store(qname, struct{}{})
@@ -94,10 +94,10 @@ func (r *RDB) Enqueue(ctx context.Context, msg *base.TaskMessage) error {
 	}
 
 	keys := []string{
-		base.TaskKey(msg.Queue, msg.ID),
-		base.StreamKey(msg.Queue),
-		base.CompletedKey(msg.Queue),
-		base.ArchivedKey(msg.Queue),
+		r.keys.TaskKey(msg.Queue, msg.ID),
+		r.keys.StreamKey(msg.Queue),
+		r.keys.CompletedKey(msg.Queue),
+		r.keys.ArchivedKey(msg.Queue),
 	}
 	argv := []interface{}{encoded, int(base.StatePending), msg.ID}
 	return enqueueCmd.Run(ctx, r.client, keys, argv...).Err()
@@ -114,7 +114,7 @@ var ErrNoTask = errors.New("chronos: no task available")
 // still be delivered — with "$" they would be invisible to XREADGROUP forever.
 // Already-acked entries are XDEL'd, so starting at "0" never replays old work.
 func (r *RDB) EnsureGroup(ctx context.Context, qname string) error {
-	err := r.client.XGroupCreateMkStream(ctx, base.StreamKey(qname), ConsumerGroup, "0").Err()
+	err := r.client.XGroupCreateMkStream(ctx, r.keys.StreamKey(qname), ConsumerGroup, "0").Err()
 	if err != nil && !strings.HasPrefix(err.Error(), "BUSYGROUP") {
 		return err
 	}
@@ -153,7 +153,7 @@ func (r *RDB) DequeueBatch(ctx context.Context, consumer string, block time.Dura
 	if count < 1 {
 		count = 1 // go-redis omits COUNT when 0, which would read unbounded
 	}
-	streamKey := base.StreamKey(qname)
+	streamKey := r.keys.StreamKey(qname)
 
 	// go-redis maps XReadGroupArgs.Block >= 0 to a Redis "BLOCK <ms>" option,
 	// where "BLOCK 0" means block forever (not "don't block"). To honor this
@@ -189,7 +189,7 @@ func (r *RDB) DequeueBatch(ctx context.Context, consumer string, block time.Dura
 	getCmds := make([]*redis.StringCmd, len(entries))
 	for i, entry := range entries {
 		taskIDs[i], _ = entry.Values["task_id"].(string)
-		getCmds[i] = getPipe.HGet(ctx, base.TaskKey(qname, taskIDs[i]), "msg")
+		getCmds[i] = getPipe.HGet(ctx, r.keys.TaskKey(qname, taskIDs[i]), "msg")
 	}
 	// Exec returns the first command error; a redis.Nil there just means some
 	// HGet hit an orphan — inspect each command individually below.
@@ -234,7 +234,7 @@ func (r *RDB) DequeueBatch(ctx context.Context, consumer string, block time.Dura
 	// Pipeline 2: mark every surviving task active in one round trip.
 	setPipe := r.client.Pipeline()
 	for _, d := range tasks {
-		setPipe.HSet(ctx, base.TaskKey(qname, d.Msg.ID), "state", int(base.StateActive))
+		setPipe.HSet(ctx, r.keys.TaskKey(qname, d.Msg.ID), "state", int(base.StateActive))
 	}
 	if _, err := setPipe.Exec(ctx); err != nil {
 		return nil, err
@@ -261,7 +261,7 @@ return 1
 
 // Requeue returns a claimed, not-yet-dispatched task to the back of its queue.
 func (r *RDB) Requeue(ctx context.Context, qname, streamID string, msg *base.TaskMessage) error {
-	keys := []string{base.StreamKey(qname), base.TaskKey(qname, msg.ID)}
+	keys := []string{r.keys.StreamKey(qname), r.keys.TaskKey(qname, msg.ID)}
 	argv := []interface{}{ConsumerGroup, streamID, msg.ID, int(base.StatePending)}
 	return requeueCmd.Run(ctx, r.client, keys, argv...).Err()
 }
@@ -287,16 +287,16 @@ func (r *RDB) Done(ctx context.Context, qname, streamID string, msg *base.TaskMe
 		now := time.Now()
 		msg.CompletedAt = now.Unix()
 		expireAt := now.Unix() + msg.Retention
-		if err := r.moveToZSet(ctx, qname, streamID, msg, base.CompletedKey(qname), base.StateCompleted, expireAt); err != nil {
+		if err := r.moveToZSet(ctx, qname, streamID, msg, r.keys.CompletedKey(qname), base.StateCompleted, expireAt); err != nil {
 			return err
 		}
 		return r.releaseUnique(ctx, msg)
 	}
 
 	pipe := r.client.TxPipeline()
-	pipe.XAck(ctx, base.StreamKey(qname), ConsumerGroup, streamID)
-	pipe.XDel(ctx, base.StreamKey(qname), streamID)
-	pipe.Del(ctx, base.TaskKey(qname, msg.ID))
+	pipe.XAck(ctx, r.keys.StreamKey(qname), ConsumerGroup, streamID)
+	pipe.XDel(ctx, r.keys.StreamKey(qname), streamID)
+	pipe.Del(ctx, r.keys.TaskKey(qname, msg.ID))
 	if _, err := pipe.Exec(ctx); err != nil {
 		return err
 	}

@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"time"
-
-	"github.com/kenshin579/chronos-go/internal/base"
 )
 
 // ScheduleMeta is one registered schedule's registry entry.
@@ -35,7 +33,7 @@ func (r *RDB) RegisterSchedules(ctx context.Context, metas []ScheduleMeta) error
 		}
 		pairs = append(pairs, m.ID, string(v))
 	}
-	return r.client.HSet(ctx, base.SchedulesKey(), pairs...).Err()
+	return r.client.HSet(ctx, r.keys.SchedulesKey(), pairs...).Err()
 }
 
 // TouchSchedules refreshes last_seen for the given schedule IDs (scheduler
@@ -44,7 +42,7 @@ func (r *RDB) TouchSchedules(ctx context.Context, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	vals, err := r.client.HMGet(ctx, base.SchedulesKey(), ids...).Result()
+	vals, err := r.client.HMGet(ctx, r.keys.SchedulesKey(), ids...).Result()
 	if err != nil {
 		return err
 	}
@@ -66,12 +64,12 @@ func (r *RDB) TouchSchedules(ctx context.Context, ids []string) error {
 	if len(pairs) == 0 {
 		return nil
 	}
-	return r.client.HSet(ctx, base.SchedulesKey(), pairs...).Err()
+	return r.client.HSet(ctx, r.keys.SchedulesKey(), pairs...).Err()
 }
 
 // ListSchedules returns every registry entry.
 func (r *RDB) ListSchedules(ctx context.Context) ([]ScheduleMeta, error) {
-	all, err := r.client.HGetAll(ctx, base.SchedulesKey()).Result()
+	all, err := r.client.HGetAll(ctx, r.keys.SchedulesKey()).Result()
 	if err != nil {
 		return nil, err
 	}

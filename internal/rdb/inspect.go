@@ -24,7 +24,7 @@ type QueueStats struct {
 
 // QueueStats returns the per-state task counts for a queue.
 func (r *RDB) QueueStats(ctx context.Context, qname string) (*QueueStats, error) {
-	streamKey := base.StreamKey(qname)
+	streamKey := r.keys.StreamKey(qname)
 
 	xlen, err := r.client.XLen(ctx, streamKey).Result()
 	if err != nil {
@@ -44,19 +44,19 @@ func (r *RDB) QueueStats(ctx context.Context, qname string) (*QueueStats, error)
 		return nil, err
 	}
 
-	scheduled, err := r.client.ZCard(ctx, base.ScheduledKey(qname)).Result()
+	scheduled, err := r.client.ZCard(ctx, r.keys.ScheduledKey(qname)).Result()
 	if err != nil {
 		return nil, err
 	}
-	retry, err := r.client.ZCard(ctx, base.RetryKey(qname)).Result()
+	retry, err := r.client.ZCard(ctx, r.keys.RetryKey(qname)).Result()
 	if err != nil {
 		return nil, err
 	}
-	archived, err := r.client.ZCard(ctx, base.ArchivedKey(qname)).Result()
+	archived, err := r.client.ZCard(ctx, r.keys.ArchivedKey(qname)).Result()
 	if err != nil {
 		return nil, err
 	}
-	completed, err := r.client.ZCard(ctx, base.CompletedKey(qname)).Result()
+	completed, err := r.client.ZCard(ctx, r.keys.CompletedKey(qname)).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -78,19 +78,19 @@ func (r *RDB) QueueStats(ctx context.Context, qname string) (*QueueStats, error)
 
 // Queues returns the names of all known queues.
 func (r *RDB) Queues(ctx context.Context) ([]string, error) {
-	return r.client.SMembers(ctx, base.QueuesKey()).Result()
+	return r.client.SMembers(ctx, r.keys.QueuesKey()).Result()
 }
 
 // GroupMemberIDs returns the IDs of a group's not-yet-succeeded members
 // (empty when the group finished or its record expired).
 func (r *RDB) GroupMemberIDs(ctx context.Context, cbQueue, groupID string) ([]string, error) {
-	return r.client.SMembers(ctx, base.GroupKey(cbQueue, groupID)).Result()
+	return r.client.SMembers(ctx, r.keys.GroupKey(cbQueue, groupID)).Result()
 }
 
 // LeaderID returns the current scheduler leader's instance ID ("" when no
 // leader holds the lock).
 func (r *RDB) LeaderID(ctx context.Context) (string, error) {
-	id, err := r.client.Get(ctx, base.LeaderKey()).Result()
+	id, err := r.client.Get(ctx, r.keys.LeaderKey()).Result()
 	if err == redis.Nil {
 		return "", nil
 	}
@@ -111,7 +111,7 @@ type ScheduleFireInfo struct {
 func (r *RDB) ScanSchedules(ctx context.Context) ([]ScheduleFireInfo, error) {
 	// Derive the scan pattern (and trim bounds) from the canonical key builder
 	// so a key-shape change cannot silently break this scan.
-	pattern := base.ScheduleLastFiredKey("*")
+	pattern := r.keys.ScheduleLastFiredKey("*")
 	star := strings.Index(pattern, "*")
 	prefix, suffix := pattern[:star], pattern[star+1:]
 
@@ -200,7 +200,7 @@ func (r *RDB) ZScore(ctx context.Context, zsetKey, taskID string) (float64, bool
 
 // GetTask reads a single task's message by ID. Returns redis.Nil if absent.
 func (r *RDB) GetTask(ctx context.Context, qname, taskID string) (*base.TaskMessage, error) {
-	raw, err := r.client.HGet(ctx, base.TaskKey(qname, taskID), "msg").Result()
+	raw, err := r.client.HGet(ctx, r.keys.TaskKey(qname, taskID), "msg").Result()
 	if err != nil {
 		return nil, err
 	}
@@ -214,7 +214,7 @@ func (r *RDB) GetTask(ctx context.Context, qname, taskID string) (*base.TaskMess
 // drain contract on CreateGroupIfAbsent uses this to detect a leftover
 // completed member.
 func (r *RDB) TaskState(ctx context.Context, qname, taskID string) (base.TaskState, error) {
-	v, err := r.client.HGet(ctx, base.TaskKey(qname, taskID), "state").Int()
+	v, err := r.client.HGet(ctx, r.keys.TaskKey(qname, taskID), "state").Int()
 	if err != nil {
 		return 0, err
 	}
@@ -246,9 +246,9 @@ return 1
 // RunTask promotes a scheduled/retry/archived/completed task to the stream so it runs now.
 func (r *RDB) RunTask(ctx context.Context, qname, taskID string) error {
 	keys := []string{
-		base.ScheduledKey(qname), base.RetryKey(qname), base.ArchivedKey(qname),
-		base.CompletedKey(qname),
-		base.StreamKey(qname), base.TaskKey(qname, taskID),
+		r.keys.ScheduledKey(qname), r.keys.RetryKey(qname), r.keys.ArchivedKey(qname),
+		r.keys.CompletedKey(qname),
+		r.keys.StreamKey(qname), r.keys.TaskKey(qname, taskID),
 	}
 	return runTaskCmd.Run(ctx, r.client, keys, taskID, int(base.StatePending)).Err()
 }
@@ -267,11 +267,11 @@ func (r *RDB) DeleteTask(ctx context.Context, qname, taskID string) error {
 		return err
 	}
 	pipe := r.client.TxPipeline()
-	pipe.ZRem(ctx, base.ScheduledKey(qname), taskID)
-	pipe.ZRem(ctx, base.RetryKey(qname), taskID)
-	pipe.ZRem(ctx, base.ArchivedKey(qname), taskID)
-	pipe.ZRem(ctx, base.CompletedKey(qname), taskID)
-	pipe.Del(ctx, base.TaskKey(qname, taskID))
+	pipe.ZRem(ctx, r.keys.ScheduledKey(qname), taskID)
+	pipe.ZRem(ctx, r.keys.RetryKey(qname), taskID)
+	pipe.ZRem(ctx, r.keys.ArchivedKey(qname), taskID)
+	pipe.ZRem(ctx, r.keys.CompletedKey(qname), taskID)
+	pipe.Del(ctx, r.keys.TaskKey(qname, taskID))
 	if _, err := pipe.Exec(ctx); err != nil {
 		return err
 	}

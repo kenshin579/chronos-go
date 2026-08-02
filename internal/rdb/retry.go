@@ -26,14 +26,14 @@ return 1
 // score = retryAt. The caller is responsible for having set msg.Retried to the
 // desired value; Retry persists msg as given and sets its state to retry.
 func (r *RDB) Retry(ctx context.Context, qname, streamID string, msg *base.TaskMessage, retryAt time.Time) error {
-	return r.moveToZSet(ctx, qname, streamID, msg, base.RetryKey(qname), base.StateRetry, retryAt.Unix())
+	return r.moveToZSet(ctx, qname, streamID, msg, r.keys.RetryKey(qname), base.StateRetry, retryAt.Unix())
 }
 
 // Archive acks the active stream entry and moves the task to the archived ZSET
 // (dead-letter) with score = diedAt. Archiving is terminal, so the task's
 // unique lock (if any) is released.
 func (r *RDB) Archive(ctx context.Context, qname, streamID string, msg *base.TaskMessage, diedAt time.Time) error {
-	if err := r.moveToZSet(ctx, qname, streamID, msg, base.ArchivedKey(qname), base.StateArchived, diedAt.Unix()); err != nil {
+	if err := r.moveToZSet(ctx, qname, streamID, msg, r.keys.ArchivedKey(qname), base.StateArchived, diedAt.Unix()); err != nil {
 		return err
 	}
 	return r.releaseUnique(ctx, msg)
@@ -45,7 +45,7 @@ func (r *RDB) moveToZSet(ctx context.Context, qname, streamID string, msg *base.
 	if err != nil {
 		return err
 	}
-	keys := []string{base.StreamKey(qname), base.TaskKey(qname, msg.ID), zsetKey}
+	keys := []string{r.keys.StreamKey(qname), r.keys.TaskKey(qname, msg.ID), zsetKey}
 	argv := []interface{}{ConsumerGroup, streamID, encoded, int(state), score, msg.ID}
 	return moveToZSetCmd.Run(ctx, r.client, keys, argv...).Err()
 }

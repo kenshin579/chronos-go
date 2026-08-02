@@ -57,7 +57,7 @@ func (r *RDB) EnqueueChainLink(ctx context.Context, msg *base.TaskMessage, delay
 		if err != nil {
 			return false, err
 		}
-		keys := []string{base.TaskKey(msg.Queue, msg.ID), base.ScheduledKey(msg.Queue)}
+		keys := []string{r.keys.TaskKey(msg.Queue, msg.ID), r.keys.ScheduledKey(msg.Queue)}
 		argv := []interface{}{encoded, int(base.StateScheduled), time.Now().Add(delay).Unix(), msg.ID}
 		n, err := chainScheduleCmd.Run(ctx, r.client, keys, argv...).Int()
 		if err != nil {
@@ -71,7 +71,7 @@ func (r *RDB) EnqueueChainLink(ctx context.Context, msg *base.TaskMessage, delay
 	if err != nil {
 		return false, err
 	}
-	keys := []string{base.TaskKey(msg.Queue, msg.ID), base.StreamKey(msg.Queue)}
+	keys := []string{r.keys.TaskKey(msg.Queue, msg.ID), r.keys.StreamKey(msg.Queue)}
 	argv := []interface{}{encoded, int(base.StatePending), msg.ID}
 	n, err := chainEnqueueCmd.Run(ctx, r.client, keys, argv...).Int()
 	if err != nil {

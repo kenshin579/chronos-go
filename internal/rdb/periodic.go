@@ -50,8 +50,8 @@ func (r *RDB) EnqueuePeriodic(ctx context.Context, msg *base.TaskMessage, dedupK
 		ms = 1
 	}
 	keys := []string{
-		dedupKey, base.TaskKey(msg.Queue, msg.ID), base.StreamKey(msg.Queue),
-		base.CompletedKey(msg.Queue), base.ArchivedKey(msg.Queue),
+		dedupKey, r.keys.TaskKey(msg.Queue, msg.ID), r.keys.StreamKey(msg.Queue),
+		r.keys.CompletedKey(msg.Queue), r.keys.ArchivedKey(msg.Queue),
 	}
 	res, err := enqueuePeriodicCmd.Run(ctx, r.client, keys, msg.ID, ms, encoded, int(base.StatePending)).Int()
 	if err != nil {
@@ -65,12 +65,12 @@ func (r *RDB) EnqueuePeriodic(ctx context.Context, msg *base.TaskMessage, dedupK
 
 // SetLastFired records the unix time a schedule last fired.
 func (r *RDB) SetLastFired(ctx context.Context, scheduleID string, when time.Time) error {
-	return r.client.Set(ctx, base.ScheduleLastFiredKey(scheduleID), when.Unix(), 0).Err()
+	return r.client.Set(ctx, r.keys.ScheduleLastFiredKey(scheduleID), when.Unix(), 0).Err()
 }
 
 // GetLastFired returns the time a schedule last fired. ok is false if unset.
 func (r *RDB) GetLastFired(ctx context.Context, scheduleID string) (time.Time, bool, error) {
-	raw, err := r.client.Get(ctx, base.ScheduleLastFiredKey(scheduleID)).Result()
+	raw, err := r.client.Get(ctx, r.keys.ScheduleLastFiredKey(scheduleID)).Result()
 	if err == redis.Nil {
 		return time.Time{}, false, nil
 	}

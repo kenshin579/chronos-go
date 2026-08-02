@@ -34,8 +34,8 @@ return #ids
 // tasks and returns how many were forwarded. The computed task-hash keys share
 // the queue's hash tag, so the multi-key script is cluster-safe.
 func (r *RDB) ForwardRetry(ctx context.Context, qname string, now time.Time, max int) (int, error) {
-	keys := []string{base.RetryKey(qname), base.StreamKey(qname)}
-	argv := []interface{}{now.Unix(), max, base.TaskKeyPrefix(qname), int(base.StatePending)}
+	keys := []string{r.keys.RetryKey(qname), r.keys.StreamKey(qname)}
+	argv := []interface{}{now.Unix(), max, r.keys.TaskKeyPrefix(qname), int(base.StatePending)}
 	n, err := forwardCmd.Run(ctx, r.client, keys, argv...).Int()
 	if err != nil {
 		return 0, err
@@ -46,8 +46,8 @@ func (r *RDB) ForwardRetry(ctx context.Context, qname string, now time.Time, max
 // ForwardScheduled promotes due delayed tasks (score <= now) from the scheduled
 // ZSET into the stream. It shares forwardCmd with ForwardRetry.
 func (r *RDB) ForwardScheduled(ctx context.Context, qname string, now time.Time, max int) (int, error) {
-	keys := []string{base.ScheduledKey(qname), base.StreamKey(qname)}
-	argv := []interface{}{scheduleScore(now), max, base.TaskKeyPrefix(qname), int(base.StatePending)}
+	keys := []string{r.keys.ScheduledKey(qname), r.keys.StreamKey(qname)}
+	argv := []interface{}{scheduleScore(now), max, r.keys.TaskKeyPrefix(qname), int(base.StatePending)}
 	n, err := forwardCmd.Run(ctx, r.client, keys, argv...).Int()
 	if err != nil {
 		return 0, err

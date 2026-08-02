@@ -76,8 +76,8 @@ func (r *RDB) EnqueueUnique(ctx context.Context, msg *base.TaskMessage, uniqueTT
 		return err
 	}
 	keys := []string{
-		msg.UniqueKey, base.TaskKey(msg.Queue, msg.ID), base.StreamKey(msg.Queue),
-		base.CompletedKey(msg.Queue), base.ArchivedKey(msg.Queue),
+		msg.UniqueKey, r.keys.TaskKey(msg.Queue, msg.ID), r.keys.StreamKey(msg.Queue),
+		r.keys.CompletedKey(msg.Queue), r.keys.ArchivedKey(msg.Queue),
 	}
 	argv := []interface{}{msg.ID, uniqueTTLMillis(uniqueTTL), encoded, int(base.StatePending)}
 	res, err := enqueueUniqueCmd.Run(ctx, r.client, keys, argv...).Int()
@@ -102,8 +102,8 @@ func (r *RDB) ScheduleUnique(ctx context.Context, msg *base.TaskMessage, process
 		return err
 	}
 	keys := []string{
-		msg.UniqueKey, base.TaskKey(msg.Queue, msg.ID), base.ScheduledKey(msg.Queue),
-		base.CompletedKey(msg.Queue), base.ArchivedKey(msg.Queue),
+		msg.UniqueKey, r.keys.TaskKey(msg.Queue, msg.ID), r.keys.ScheduledKey(msg.Queue),
+		r.keys.CompletedKey(msg.Queue), r.keys.ArchivedKey(msg.Queue),
 	}
 	argv := []interface{}{msg.ID, uniqueTTLMillis(uniqueTTL), encoded, int(base.StateScheduled), scheduleScore(processAt)}
 	res, err := scheduleUniqueCmd.Run(ctx, r.client, keys, argv...).Int()

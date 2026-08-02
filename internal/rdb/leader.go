@@ -5,8 +5,6 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-
-	"github.com/kenshin579/chronos-go/internal/base"
 )
 
 // acquireOrRenewCmd acquires leadership if vacant, or renews it if already held
@@ -43,7 +41,7 @@ func (r *RDB) AcquireOrRenewLeadership(ctx context.Context, instanceID string, t
 	if ms < 1 {
 		ms = 1
 	}
-	res, err := acquireOrRenewCmd.Run(ctx, r.client, []string{base.LeaderKey()}, instanceID, ms).Int()
+	res, err := acquireOrRenewCmd.Run(ctx, r.client, []string{r.keys.LeaderKey()}, instanceID, ms).Int()
 	if err != nil {
 		return false, err
 	}
@@ -54,13 +52,13 @@ func (r *RDB) AcquireOrRenewLeadership(ctx context.Context, instanceID string, t
 // followers via pub/sub so they can re-elect immediately. Releasing when not the
 // owner is a no-op.
 func (r *RDB) ResignLeadership(ctx context.Context, instanceID string) error {
-	if err := resignCmd.Run(ctx, r.client, []string{base.LeaderKey()}, instanceID).Err(); err != nil {
+	if err := resignCmd.Run(ctx, r.client, []string{r.keys.LeaderKey()}, instanceID).Err(); err != nil {
 		return err
 	}
-	return r.client.Publish(ctx, base.LeaderResignChannel(), instanceID).Err()
+	return r.client.Publish(ctx, r.keys.LeaderResignChannel(), instanceID).Err()
 }
 
 // SubscribeResign returns a pub/sub subscription to the leader-resign channel.
 func (r *RDB) SubscribeResign(ctx context.Context) *redis.PubSub {
-	return r.client.Subscribe(ctx, base.LeaderResignChannel())
+	return r.client.Subscribe(ctx, r.keys.LeaderResignChannel())
 }

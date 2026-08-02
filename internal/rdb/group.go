@@ -95,7 +95,7 @@ func (r *RDB) CreateGroup(ctx context.Context, cbQueue, groupID string, memberID
 	if len(memberIDs) == 0 {
 		return errors.New("chronos: group needs at least one member")
 	}
-	key := base.GroupKey(cbQueue, groupID)
+	key := r.keys.GroupKey(cbQueue, groupID)
 	pipe := r.client.TxPipeline()
 	members := make([]interface{}, len(memberIDs))
 	for i, id := range memberIDs {
@@ -161,9 +161,9 @@ func (r *RDB) CreateGroupIfAbsent(ctx context.Context, cbQueue, groupID string, 
 		return GroupStageDone, errors.New("chronos: group needs at least one member")
 	}
 	keys := []string{
-		base.GroupKey(cbQueue, groupID),
-		base.TaskKey(cbQueue, cbTaskID),
-		base.GroupResultKey(cbQueue, groupID),
+		r.keys.GroupKey(cbQueue, groupID),
+		r.keys.TaskKey(cbQueue, cbTaskID),
+		r.keys.GroupResultKey(cbQueue, groupID),
 	}
 	argv := make([]interface{}, 0, len(memberIDs)+1)
 	argv = append(argv, int(GroupTTL/time.Second))
@@ -223,9 +223,9 @@ func (r *RDB) CompleteGroupMember(ctx context.Context, member *base.TaskMessage)
 	if link.Delay > 0 {
 		mode, state = "zset", base.StateScheduled
 		score = time.Now().Add(time.Duration(link.Delay) * time.Second).Unix()
-		destKey = base.ScheduledKey(cb.Queue)
+		destKey = r.keys.ScheduledKey(cb.Queue)
 	} else {
-		destKey = base.StreamKey(cb.Queue)
+		destKey = r.keys.StreamKey(cb.Queue)
 	}
 	cb.State = state
 	encoded, err := base.EncodeMessage(cb)
@@ -234,10 +234,10 @@ func (r *RDB) CompleteGroupMember(ctx context.Context, member *base.TaskMessage)
 	}
 
 	keys := []string{
-		base.GroupKey(member.GroupQueue, member.GroupID),
-		base.TaskKey(cb.Queue, cb.ID),
+		r.keys.GroupKey(member.GroupQueue, member.GroupID),
+		r.keys.TaskKey(cb.Queue, cb.ID),
 		destKey,
-		base.GroupResultKey(member.GroupQueue, member.GroupID),
+		r.keys.GroupResultKey(member.GroupQueue, member.GroupID),
 	}
 	resultB64 := ""
 	if len(member.Result) > 0 {
@@ -258,11 +258,11 @@ func (r *RDB) CompleteGroupMember(ctx context.Context, member *base.TaskMessage)
 
 // GroupMembers lists the group's still-pending member IDs.
 func (r *RDB) GroupMembers(ctx context.Context, cbQueue, groupID string) ([]string, error) {
-	return r.client.SMembers(ctx, base.GroupKey(cbQueue, groupID)).Result()
+	return r.client.SMembers(ctx, r.keys.GroupKey(cbQueue, groupID)).Result()
 }
 
 // GroupPending returns how many members of the group have not yet succeeded
 // (0 when the group finished or its state expired).
 func (r *RDB) GroupPending(ctx context.Context, cbQueue, groupID string) (int64, error) {
-	return r.client.SCard(ctx, base.GroupKey(cbQueue, groupID)).Result()
+	return r.client.SCard(ctx, r.keys.GroupKey(cbQueue, groupID)).Result()
 }
