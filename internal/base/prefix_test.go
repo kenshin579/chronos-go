@@ -11,6 +11,8 @@ func TestNormalizePrefix(t *testing.T) {
 		{"inspireme", "inspireme"},
 		{"myapp:", "myapp"},                        // trailing colon trimmed
 		{"myapp:::", "myapp"},                      // repeated trailing colons trimmed
+		{":myapp", "myapp"},                        // leading colon trimmed — would yield ":myapp:{q}:stream"
+		{":myapp:", "myapp"},                       // both ends trimmed
 		{"chronos:inspireme", "chronos:inspireme"}, // interior colon kept
 	}
 	for _, tt := range tests {

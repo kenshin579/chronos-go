@@ -90,6 +90,8 @@ func TestNormalizePrefix(t *testing.T) {
 		{"inspireme", "inspireme"},
 		{"myapp:", "myapp"},           // trailing colon trimmed
 		{"myapp:::", "myapp"},         // repeated trailing colons trimmed
+		{":myapp", "myapp"},           // leading colon trimmed — would yield ":myapp:{q}:stream"
+		{":myapp:", "myapp"},          // both ends trimmed
 		{"chronos:inspireme", "chronos:inspireme"}, // interior colon kept
 	}
 	for _, tt := range tests {
@@ -156,8 +158,10 @@ import (
 // does not opt into a namespace sees byte-identical keys.
 const DefaultPrefix = "chronos"
 
-// NormalizePrefix validates a key prefix and returns it with trailing colons
-// removed, so "myapp" and "myapp:" behave identically.
+// NormalizePrefix validates a key prefix and returns it with leading and
+// trailing colons removed, so "myapp", "myapp:", and ":myapp:" all behave
+// identically. Without trimming the leading colon a prefix would produce keys
+// like ":myapp:{q}:stream".
 //
 // It panics on an invalid prefix rather than returning an error. A prefix is
 // almost always a compile-time constant, and every rejected character causes a
@@ -167,7 +171,7 @@ const DefaultPrefix = "chronos"
 // strictly safer than misrouting every key. This matches AddHandler, which
 // panics on a duplicate Kind for the same reason.
 func NormalizePrefix(prefix string) string {
-	p := strings.TrimRight(prefix, ":")
+	p := strings.Trim(prefix, ":")
 	if p == "" {
 		panic(fmt.Sprintf("chronos: key prefix %q is empty", prefix))
 	}
