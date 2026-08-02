@@ -1,6 +1,7 @@
 package prometheus
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -13,7 +14,10 @@ import (
 
 func TestMetrics_ObserveTask_IncrementsCounter(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := NewMetrics(reg)
+	m := NewMetrics()
+	if err := reg.Register(m); err != nil {
+		t.Fatalf("register: %v", err)
+	}
 
 	m.ObserveTask("default", "email:send", chronos.OutcomeSuccess, 5*time.Millisecond)
 	m.ObserveTask("default", "email:send", chronos.OutcomeSuccess, 7*time.Millisecond)
@@ -32,7 +36,10 @@ chronos_tasks_processed_total{kind="email:send",outcome="success",queue="default
 
 func TestMetrics_ObserveRecovered_CountsByOutcome(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := NewMetrics(reg)
+	m := NewMetrics()
+	if err := reg.Register(m); err != nil {
+		t.Fatalf("register: %v", err)
+	}
 
 	m.ObserveRecovered("default", 2, 1)
 	m.ObserveRecovered("default", 1, 0)
@@ -56,7 +63,10 @@ chronos_tasks_recovered_total{outcome="requeued",queue="low"} 0
 // recoverer that stopped running.
 func TestMetrics_ObserveRecovered_ZeroSweepEmitsSeries(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	m := NewMetrics(reg)
+	m := NewMetrics()
+	if err := reg.Register(m); err != nil {
+		t.Fatalf("register: %v", err)
+	}
 
 	m.ObserveRecovered("default", 0, 0)
 
@@ -71,5 +81,26 @@ chronos_tasks_recovered_total{outcome="requeued",queue="default"} 0
 	}
 	if got := testutil.CollectAndCount(m.recovered); got != 2 {
 		t.Errorf("child series after a zero sweep = %d, want 2", got)
+	}
+}
+
+// NewMetrics must not register itself: an adopter needs to decide what happens
+// when registration fails. Killing the app because a metric collided trades
+// availability for observability.
+func TestNewMetrics_DoesNotSelfRegister(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewMetrics()
+
+	if err := reg.Register(m); err != nil {
+		t.Fatalf("first register: %v", err)
+	}
+	// The second registration must return an error, not panic.
+	err := reg.Register(m)
+	if err == nil {
+		t.Fatal("second Register returned nil, want AlreadyRegisteredError")
+	}
+	var are prometheus.AlreadyRegisteredError
+	if !errors.As(err, &are) {
+		t.Errorf("got %T, want prometheus.AlreadyRegisteredError", err)
 	}
 }

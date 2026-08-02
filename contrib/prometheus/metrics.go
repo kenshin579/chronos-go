@@ -26,6 +26,7 @@ const (
 var (
 	_ chronos.Metrics         = (*Metrics)(nil)
 	_ chronos.RecoveryMetrics = (*Metrics)(nil)
+	_ prometheus.Collector    = (*Metrics)(nil)
 )
 
 // Metrics implements chronos.Metrics using Prometheus counters and a histogram.
@@ -37,9 +38,16 @@ type Metrics struct {
 	recovered *prometheus.CounterVec
 }
 
-// NewMetrics creates the task metrics and registers them with reg.
-func NewMetrics(reg prometheus.Registerer) *Metrics {
-	m := &Metrics{
+// NewMetrics creates the task metrics. It does not register them — the caller
+// decides what to do if registration fails, since a metric collision is not a
+// reason to kill an application.
+//
+//	m := prometheus.NewMetrics()
+//	if err := reg.Register(m); err != nil {
+//		log.Warn("chronos metrics not registered", "error", err)
+//	}
+func NewMetrics() *Metrics {
+	return &Metrics{
 		processed: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "chronos_tasks_processed_total",
 			Help: "Total tasks processed, by queue, kind and outcome.",
@@ -56,8 +64,20 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Help: "Total tasks reclaimed from crashed workers, by queue and outcome.",
 		}, []string{"queue", "outcome"}),
 	}
-	reg.MustRegister(m.processed, m.duration, m.recovered)
-	return m
+}
+
+// Describe implements prometheus.Collector.
+func (m *Metrics) Describe(ch chan<- *prometheus.Desc) {
+	m.processed.Describe(ch)
+	m.duration.Describe(ch)
+	m.recovered.Describe(ch)
+}
+
+// Collect implements prometheus.Collector.
+func (m *Metrics) Collect(ch chan<- prometheus.Metric) {
+	m.processed.Collect(ch)
+	m.duration.Collect(ch)
+	m.recovered.Collect(ch)
 }
 
 // ObserveTask implements chronos.Metrics.

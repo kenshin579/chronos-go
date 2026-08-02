@@ -36,7 +36,8 @@ func main() {
 	ctx := context.Background()
 
 	reg := prometheus.NewRegistry()
-	metrics := chronosprom.NewMetrics(reg)
+	metrics := chronosprom.NewMetrics()
+	reg.MustRegister(metrics)
 	reg.MustRegister(chronosprom.NewQueueCollector(chronos.NewInspector(rdb)))
 
 	mux := chronos.NewMux()
