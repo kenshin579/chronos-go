@@ -52,6 +52,11 @@ redis-cli -n 15 MONITOR
 
 큐 이름은 Redis Cluster hash tag `{}`로 감싸 같은 슬롯에 배치된다.
 
+> **이 절의 `chronos:`는 기본 프리픽스다.** `chronos.NewNamespace(rdb, "myapp")`으로
+> 띄운 배포는 모든 키가 `myapp:`으로 시작하므로, 아래 명령의 `chronos`를 그 프리픽스로
+> 바꿔야 한다. 프리픽스는 `NewNamespace`에 넘긴 값이며, 코드에서 확인하려면
+> `ns.Prefix()`를 읽는다.
+
 ```bash
 redis-cli -n 15 KEYS 'chronos:*'
 ```
