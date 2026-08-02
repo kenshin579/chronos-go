@@ -873,7 +873,23 @@ Claude-Session: https://claude.ai/code/session_01VzVTM8ViMq87z461eA7Ure"
 
 ### Task 6: Documentation
 
-**Files:** `contrib/prometheus/README.md`
+**Files:** `contrib/prometheus/README.md`, `contrib/prometheus/deploy/README.md`
+
+**Two files reference the old API, not one.** Verified:
+
+```
+contrib/prometheus/README.md:14         Wire it via `NewMetrics(reg)` and pass it as
+contrib/prometheus/deploy/README.md:28  metrics := chronosprom.NewMetrics(reg)
+```
+
+The `deploy/` snippet no longer compiles after Task 2. Before finishing, re-run
+the check so a third file added later is not missed:
+
+```bash
+find . -name '*.md' -not -path './docs/superpowers/*' -exec grep -Hn "NewMetrics(" {} \;
+```
+
+Expected after this task: every hit shows `NewMetrics()` with no argument.
 
 - [ ] **Step 1: Update**
 
