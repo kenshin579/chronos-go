@@ -21,17 +21,26 @@ const ConsumerGroup = "chronos"
 type RDB struct {
 	client redis.UniversalClient
 
+	// keys builds every Redis key this RDB touches. It carries the namespace
+	// prefix, so two RDBs with different Keys cannot see each other's data —
+	// including the scheduler leader lock.
+	keys base.Keys
+
 	// knownQueues caches queue names this instance has already registered in
-	// the global queue index (SADD chronos:queues), so the hot enqueue path
+	// the global queue index (SADD <prefix>:queues), so the hot enqueue path
 	// pays that extra round trip only once per queue per process. Registration
 	// is idempotent, so a lost cache (new process) just re-registers.
 	knownQueues sync.Map // queue name -> struct{}
 }
 
-// NewRDB returns an RDB backed by the given Redis client.
-func NewRDB(client redis.UniversalClient) *RDB {
-	return &RDB{client: client}
+// NewRDB returns an RDB backed by the given Redis client, building keys under
+// the given layout.
+func NewRDB(client redis.UniversalClient, keys base.Keys) *RDB {
+	return &RDB{client: client, keys: keys}
 }
+
+// Keys returns the key layout this RDB builds with.
+func (r *RDB) Keys() base.Keys { return r.keys }
 
 // registerQueue adds qname to the global queue index, skipping the round trip
 // when this instance has already done so. See knownQueues.

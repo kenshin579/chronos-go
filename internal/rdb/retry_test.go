@@ -29,7 +29,7 @@ func enqueueAndDequeue(t *testing.T, r *RDB, qname string, msg *base.TaskMessage
 
 func TestRetry_MovesActiveToRetryZSet(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	msg := &base.TaskMessage{ID: "t1", Kind: "k", Payload: []byte("{}"), Queue: "default", MaxRetry: 5}
@@ -72,7 +72,7 @@ func TestRetry_MovesActiveToRetryZSet(t *testing.T) {
 
 func TestArchive_MovesActiveToArchivedZSet(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	msg := &base.TaskMessage{ID: "t1", Kind: "k", Payload: []byte("{}"), Queue: "default", MaxRetry: 0}

@@ -130,7 +130,7 @@ type Client struct {
 
 // NewClient returns a Client backed by the given Redis client.
 func NewClient(r redis.UniversalClient) *Client {
-	return &Client{rdb: rdb.NewRDB(r)}
+	return &Client{rdb: rdb.NewRDB(r, base.DefaultKeys)}
 }
 
 // Close releases the client's resources. The underlying Redis client is owned

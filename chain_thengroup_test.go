@@ -155,7 +155,7 @@ var errNoResultTestSentinel = errors.New("wf: deliberate failure")
 // 콜백 ID를 찾는 대신, 콜백 retention 덕에 남아 있는 hash를 스캔해 group ID를
 // 복원한다).
 func rdbCreateIfAbsentForTest(ctx context.Context, client redis.UniversalClient, q string) (int, error) {
-	r := rdb.NewRDB(client)
+	r := rdb.NewRDB(client, base.DefaultKeys)
 	var cbKey string
 	iter := client.Scan(ctx, 0, "chronos:{"+q+"}:t:*:cb", 100).Iterator()
 	for iter.Next(ctx) {
@@ -371,7 +371,7 @@ func TestThenGroup_DrainLingeringCompletedMember(t *testing.T) {
 	chainID := strings.TrimSuffix(info.ID, ":0")
 	groupID := chainID + ":1"
 	memberID := groupID + ":m0"
-	r := rdb.NewRDB(client)
+	r := rdb.NewRDB(client, base.DefaultKeys)
 	st, err := r.CreateGroupIfAbsent(ctx, "wf", groupID, []string{memberID}, groupID+":cb")
 	if err != nil || st != rdb.GroupStageCreated {
 		t.Fatalf("recreate: st=%v err=%v", st, err)
@@ -398,7 +398,7 @@ func TestThenGroup_PartialCompletionReenqueueSkips(t *testing.T) {
 
 	// 워커는 띄우지 않는다(Start 없음) — 서버 비공개 경로만 결정적으로 구동.
 	srv := NewServer(client, ServerConfig{Queues: map[string]int{"wf": 1}, Concurrency: 1})
-	r := rdb.NewRDB(client)
+	r := rdb.NewRDB(client, base.DefaultKeys)
 
 	link := base.ChainLink{
 		Kind: "wf:merge", Queue: "wf",

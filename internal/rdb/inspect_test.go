@@ -13,7 +13,7 @@ import (
 
 func TestQueueStats_CountsByState(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 	if err := r.EnsureGroup(ctx, "default"); err != nil {
 		t.Fatalf("ensure group: %v", err)
@@ -48,7 +48,7 @@ func TestQueueStats_CountsByState(t *testing.T) {
 // redis.Nil을 그대로 돌려 caller가 "태스크 없음"을 구분하게 한다.
 func TestTaskState_ReadsHashStateField(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	if err := r.Enqueue(ctx, &base.TaskMessage{ID: "t1", Kind: "k", Payload: []byte("{}"), Queue: "default"}); err != nil {
@@ -69,7 +69,7 @@ func TestTaskState_ReadsHashStateField(t *testing.T) {
 
 func TestListZSetTasks_ReturnsMessages(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	msg := &base.TaskMessage{ID: "s1", Kind: "k", Payload: []byte(`{"x":1}`), Queue: "default"}
@@ -88,7 +88,7 @@ func TestListZSetTasks_ReturnsMessages(t *testing.T) {
 
 func TestListZSetTasks_ReturnsScores(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	msg := &base.TaskMessage{ID: "s1", Kind: "k", Queue: "default", State: base.StateScheduled}
@@ -117,7 +117,7 @@ func TestListZSetTasks_ReturnsScores(t *testing.T) {
 
 func TestRunTask_MovesToStream(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 	if err := r.EnsureGroup(ctx, "default"); err != nil {
 		t.Fatalf("ensure group: %v", err)
@@ -147,7 +147,7 @@ func TestRunTask_MovesToStream(t *testing.T) {
 
 func TestDeleteTask_RemovesEverywhere(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	msg := &base.TaskMessage{ID: "s1", Kind: "k", Payload: []byte("{}"), Queue: "default"}
@@ -169,7 +169,7 @@ func TestDeleteTask_RemovesEverywhere(t *testing.T) {
 // a no-op: it must not add a duplicate stream entry (which would double-execute).
 func TestRunTask_ActiveTaskIsNoOp(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 	if err := r.EnsureGroup(ctx, "default"); err != nil {
 		t.Fatalf("ensure group: %v", err)
@@ -197,7 +197,7 @@ func TestRunTask_ActiveTaskIsNoOp(t *testing.T) {
 
 func TestGroupMemberIDs_AndLeaderAndSchedules(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	if err := r.CreateGroup(ctx, "cbq", "gm", []string{"gm:m0", "gm:m1"}); err != nil {

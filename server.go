@@ -188,7 +188,7 @@ func NewServer(r redis.UniversalClient, cfg ServerConfig) *Server {
 		cfg.JanitorInterval = 1 * time.Minute
 	}
 	return &Server{
-		rdb:      rdb.NewRDB(r),
+		rdb:      rdb.NewRDB(r, base.DefaultKeys),
 		cfg:      cfg,
 		consumer: uuid.NewString(),
 		logger:   logger,

@@ -12,7 +12,7 @@ import (
 
 func TestDequeueBatch_ClaimsUpToCount(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	if err := r.EnsureGroup(ctx, "default"); err != nil {
@@ -81,7 +81,7 @@ func TestDequeueBatch_ClaimsUpToCount(t *testing.T) {
 
 func TestDequeueBatch_SkipsOrphans(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	if err := r.EnsureGroup(ctx, "default"); err != nil {
@@ -123,7 +123,7 @@ func TestDequeueBatch_SkipsOrphans(t *testing.T) {
 
 func TestDequeueBatch_SkipsCorruptEntry(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	for _, id := range []string{"ok1", "bad", "ok2"} {
@@ -154,7 +154,7 @@ func TestDequeueBatch_SkipsCorruptEntry(t *testing.T) {
 
 func TestRequeue_ReturnsClaimedTaskToStream(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	msg := &base.TaskMessage{ID: "rq1", Kind: "k", Queue: "default"}
@@ -183,7 +183,7 @@ func TestRequeue_ReturnsClaimedTaskToStream(t *testing.T) {
 
 func TestDequeueBatch_EmptyReturnsErrNoTask(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	if err := r.EnsureGroup(ctx, "default"); err != nil {

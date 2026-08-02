@@ -27,7 +27,7 @@ type Inspector struct {
 
 // NewInspector returns an Inspector backed by the given Redis client.
 func NewInspector(r redis.UniversalClient) *Inspector {
-	return &Inspector{rdb: rdb.NewRDB(r)}
+	return &Inspector{rdb: rdb.NewRDB(r, base.DefaultKeys)}
 }
 
 // QueueInfo is a queue's per-state task counts.

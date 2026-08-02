@@ -18,7 +18,7 @@ func uniqueMsg(id, queue string) *base.TaskMessage {
 
 func TestEnqueueUnique_SecondIsRejected(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	first := uniqueMsg("t1", "default")
@@ -44,7 +44,7 @@ func TestEnqueueUnique_SecondIsRejected(t *testing.T) {
 
 func TestScheduleUnique_SecondIsRejected(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	first := uniqueMsg("t1", "default")
@@ -62,7 +62,7 @@ func TestScheduleUnique_SecondIsRejected(t *testing.T) {
 
 func TestDone_ReleasesUniqueLock(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	msg := uniqueMsg("t1", "default")
@@ -88,7 +88,7 @@ func TestDone_ReleasesUniqueLock(t *testing.T) {
 
 func TestRetry_KeepsUniqueLock_ArchiveReleases(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 	if err := r.EnsureGroup(ctx, "default"); err != nil {
 		t.Fatalf("ensure group: %v", err)
@@ -132,7 +132,7 @@ func TestRetry_KeepsUniqueLock_ArchiveReleases(t *testing.T) {
 // race where a slow task is reclaimed and a duplicate re-locks the key.
 func TestReleaseUnique_DoesNotClobberOtherTasksLock(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	msg := uniqueMsg("t1", "default")
@@ -157,7 +157,7 @@ func TestReleaseUnique_DoesNotClobberOtherTasksLock(t *testing.T) {
 
 func TestReleaseUnique_NoUniqueKeyIsNoOp(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	// A task with no UniqueKey must not error and must touch nothing.
 	msg := &base.TaskMessage{ID: "t1", Kind: "k", Payload: []byte("{}"), Queue: "default"}
 	if err := r.releaseUnique(context.Background(), msg); err != nil {

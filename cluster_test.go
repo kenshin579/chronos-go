@@ -37,6 +37,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kenshin579/chronos-go/internal/base"
 	"github.com/kenshin579/chronos-go/internal/rdb"
 	"github.com/kenshin579/chronos-go/internal/testutil"
 )
@@ -290,7 +291,7 @@ func TestCluster_RecoverAbandonedTask(t *testing.T) {
 	c := NewClient(client)
 	defer c.Close()
 	ctx := context.Background()
-	r := rdb.NewRDB(client)
+	r := rdb.NewRDB(client, base.DefaultKeys)
 
 	// Enqueue, then dequeue with a consumer that "crashes" (never acks).
 	info, err := Enqueue(ctx, c, clArgs{N: 8}, WithQueue("recq"))
@@ -641,7 +642,7 @@ func TestCluster_RequeueReturnsTask(t *testing.T) {
 	c := NewClient(client)
 	defer c.Close()
 	ctx := context.Background()
-	r := rdb.NewRDB(client)
+	r := rdb.NewRDB(client, base.DefaultKeys)
 
 	info, err := Enqueue(ctx, c, clArgs{N: 41}, WithQueue("alpha"))
 	if err != nil {

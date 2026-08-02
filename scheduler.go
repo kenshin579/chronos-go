@@ -73,7 +73,7 @@ func NewScheduler(r redis.UniversalClient, cfg SchedulerConfig) *Scheduler {
 		cfg.LeaderTTL = 5 * time.Second
 	}
 	return &Scheduler{
-		rdb:      rdb.NewRDB(r),
+		rdb:      rdb.NewRDB(r, base.DefaultKeys),
 		cfg:      cfg,
 		instance: newInstanceID(),
 		logger:   cfg.Logger,

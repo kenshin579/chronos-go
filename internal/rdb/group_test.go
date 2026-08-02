@@ -23,7 +23,7 @@ func mkGroupMember(id string) *base.TaskMessage {
 
 func TestGroup_CompleteMembersFiresCallbackOnce(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	if err := r.CreateGroup(ctx, "cbq", "g", []string{"g:m0", "g:m1"}); err != nil {
@@ -78,7 +78,7 @@ func TestGroup_CompleteMembersFiresCallbackOnce(t *testing.T) {
 
 func TestGroup_DelayedCallbackGoesToScheduled(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	if err := r.CreateGroup(ctx, "cbq", "gd", []string{"gd:m0"}); err != nil {
@@ -108,7 +108,7 @@ func TestGroup_DelayedCallbackGoesToScheduled(t *testing.T) {
 
 func TestGroup_ReportRefreshesTTL(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	if err := r.CreateGroup(ctx, "cbq", "gr", []string{"gr:m0", "gr:m1"}); err != nil {
@@ -137,7 +137,7 @@ func TestGroup_ReportRefreshesTTL(t *testing.T) {
 // groupresult HASH가 삭제되는지 확인.
 func TestCompleteGroupMember_CollectsResults(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	cb := &base.ChainLink{Kind: "g:cb", Payload: []byte(`{}`), Queue: "gq"}
@@ -195,7 +195,7 @@ func TestCompleteGroupMember_CollectsResults(t *testing.T) {
 // (cjson 경로를 타지 않음 — 하위호환·빈 배열 함정 회피).
 func TestCompleteGroupMember_NoResultsMeansNoField(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 	cb := &base.ChainLink{Kind: "g:cb", Payload: []byte(`{}`), Queue: "gq"}
 	mk := func(i int) *base.TaskMessage {
@@ -228,7 +228,7 @@ func TestCompleteGroupMember_NoResultsMeansNoField(t *testing.T) {
 // SET보다 먼저 만료되어 이미 기록된 결과가 소실될 수 있다.
 func TestCompleteGroupMember_NoResultReportRefreshesResultHashTTL(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	cb := &base.ChainLink{Kind: "g:cb", Payload: []byte(`{}`), Queue: "gq"}
@@ -267,7 +267,7 @@ func TestCompleteGroupMember_NoResultReportRefreshesResultHashTTL(t *testing.T) 
 // CreateGroupIfAbsent의 3상태: 신규 생성(2) / 이미 존재(1) / 콜백 존재 = 스테이지 완료(0).
 func TestCreateGroupIfAbsent_ThreeStates(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	members := []string{"c1:1:m0", "c1:1:m1"}
@@ -315,7 +315,7 @@ func TestCreateGroupIfAbsent_ThreeStates(t *testing.T) {
 // 상속하고, 결과 cjson 경로에서도 꼬리가 손상되지 않는다.
 func TestCompleteGroupMember_CallbackInheritsChainTail(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	tail := []base.ChainLink{{Kind: "wf:deploy", Payload: []byte(`{"env":"prod"}`), Queue: "gq"}}
@@ -363,7 +363,7 @@ func TestCompleteGroupMember_CallbackInheritsChainTail(t *testing.T) {
 
 func TestGroup_SetHasTTL(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	if err := r.CreateGroup(ctx, "cbq", "gt", []string{"gt:m0"}); err != nil {
@@ -381,7 +381,7 @@ func TestGroup_SetHasTTL(t *testing.T) {
 // 체인 멤버: 마지막 링크의 자기 ID는 "g:m0:2"지만 SREM 대상은 슬롯 "g:m0".
 func TestCompleteGroupMember_SremsGroupMemberSlot(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	cb := &base.ChainLink{Kind: "cb", Payload: []byte(`{}`), Queue: "gq"}

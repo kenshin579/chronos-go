@@ -12,7 +12,7 @@ import (
 
 func TestEnqueuePeriodic_DedupsSameTrigger(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	msg := &base.TaskMessage{ID: "job:1:1700000000", Kind: "job", Payload: []byte("{}"), Queue: "default"}
@@ -39,7 +39,7 @@ func TestEnqueuePeriodic_DedupsSameTrigger(t *testing.T) {
 
 func TestLastFired_RoundTrip(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	// Absent → zero time, ok=false.

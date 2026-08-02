@@ -5,12 +5,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kenshin579/chronos-go/internal/base"
 	"github.com/kenshin579/chronos-go/internal/testutil"
 )
 
 func TestLeadership_SingleWinnerThenRenew(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	// A acquires; B loses while A holds.
@@ -34,7 +35,7 @@ func TestLeadership_SingleWinnerThenRenew(t *testing.T) {
 
 func TestLeadership_FailoverAfterExpiry(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	if ok, _ := r.AcquireOrRenewLeadership(ctx, "A", 200*time.Millisecond); !ok {
@@ -48,7 +49,7 @@ func TestLeadership_FailoverAfterExpiry(t *testing.T) {
 
 func TestResignLeadership_ReleasesForOthers(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	r.AcquireOrRenewLeadership(ctx, "A", time.Minute)
