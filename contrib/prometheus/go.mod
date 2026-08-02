@@ -5,7 +5,7 @@ go 1.26
 replace github.com/kenshin579/chronos-go => ../../
 
 require (
-	github.com/kenshin579/chronos-go v0.0.0-00010101000000-000000000000
+	github.com/kenshin579/chronos-go v1.2.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/redis/go-redis/v9 v9.21.0
 )
