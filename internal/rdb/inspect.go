@@ -243,6 +243,28 @@ redis.call("HSET", KEYS[6], "state", ARGV[2])
 return 1
 `)
 
+// ZSetKeyForState maps a user-facing state name to its ZSET key, reporting
+// whether the state is known. It lives here rather than in the root package so
+// the key is always built under this RDB's namespace.
+//
+// It deliberately returns a bool rather than an error: chronos.ErrInvalidState
+// is public API owned by the root package, and moving it here would drag a
+// public sentinel into internal/.
+func (r *RDB) ZSetKeyForState(qname, state string) (string, bool) {
+	switch state {
+	case "scheduled":
+		return r.keys.ScheduledKey(qname), true
+	case "retry":
+		return r.keys.RetryKey(qname), true
+	case "archived":
+		return r.keys.ArchivedKey(qname), true
+	case "completed":
+		return r.keys.CompletedKey(qname), true
+	default:
+		return "", false
+	}
+}
+
 // RunTask promotes a scheduled/retry/archived/completed task to the stream so it runs now.
 func (r *RDB) RunTask(ctx context.Context, qname, taskID string) error {
 	keys := []string{

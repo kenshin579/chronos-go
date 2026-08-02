@@ -33,10 +33,12 @@ redis.call("ZREM", KEYS[5], ARGV[1])
 return 1
 `)
 
-// EnqueuePeriodic enqueues a scheduled trigger's task exactly once per dedupKey.
-// Returns ErrDuplicateTask if the trigger was already enqueued (by this or
-// another instance).
-func (r *RDB) EnqueuePeriodic(ctx context.Context, msg *base.TaskMessage, dedupKey string, dedupTTL time.Duration) error {
+// EnqueuePeriodic enqueues a scheduled trigger's task exactly once per
+// triggerID. Returns ErrDuplicateTask if the trigger was already enqueued (by
+// this or another instance). The dedup key is derived from triggerID here so it
+// is always built under this RDB's namespace.
+func (r *RDB) EnqueuePeriodic(ctx context.Context, msg *base.TaskMessage, triggerID string, dedupTTL time.Duration) error {
+	dedupKey := r.keys.PeriodicDedupKey(msg.Queue, triggerID)
 	msg.State = base.StatePending
 	encoded, err := base.EncodeMessage(msg)
 	if err != nil {

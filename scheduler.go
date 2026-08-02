@@ -303,9 +303,8 @@ func (s *Scheduler) enqueueTrigger(ctx context.Context, e *scheduleEntry, trigge
 		MaxRetry: e.maxRetry, NoArchive: e.noArch,
 		Retention: int64(e.retention / time.Second),
 	}
-	dedupKey := base.PeriodicDedupKey(e.queue, triggerID)
 	// Dedup key lives well beyond a leader-handover window but not forever.
-	return s.rdb.EnqueuePeriodic(ctx, msg, dedupKey, 10*s.cfg.LeaderTTL)
+	return s.rdb.EnqueuePeriodic(ctx, msg, triggerID, 10*s.cfg.LeaderTTL)
 }
 
 // Shutdown stops the scheduler; if this instance is the leader it resigns so a

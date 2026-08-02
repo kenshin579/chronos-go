@@ -291,9 +291,6 @@ func Enqueue[T TaskArgs](ctx context.Context, c *Client, args T, opts ...Option)
 func dispatchMessage(ctx context.Context, c *Client, msg *base.TaskMessage, options enqueueOptions) error {
 	scheduled := !options.processAt.IsZero() && options.processAt.After(time.Now())
 	unique := options.uniqueTTL > 0
-	if unique {
-		msg.UniqueKey = base.UniqueKey(msg.Queue, base.UniqueSuffix(msg.Kind, msg.Payload))
-	}
 	switch {
 	case unique && scheduled:
 		// The lock must outlive the delay, or it would expire before the task is
