@@ -95,6 +95,21 @@ func ExampleNewScheduler() {
 	defer s.Shutdown(context.Background())
 }
 
+// ExampleNewNamespace shows two applications sharing one Redis database. Derive
+// every handle from the same Namespace: a Client writing under one prefix while
+// a Server reads another enqueues tasks nobody ever processes.
+func ExampleNewNamespace() {
+	rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:6379"})
+
+	// Each application scopes its keys, so their schedulers elect separate
+	// leaders instead of contending for one global lock.
+	ns := chronos.NewNamespace(rdb, "inspireme")
+
+	client := ns.NewClient()
+	_, _ = chronos.Enqueue(context.Background(), client, EmailArgs{To: "a@b.c"},
+		chronos.WithQueue("default"))
+}
+
 // ExampleNewInspector reads operational state: queue stats, task listing,
 // pause/resume, scheduler status.
 func ExampleNewInspector() {

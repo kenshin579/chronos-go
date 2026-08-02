@@ -5,8 +5,6 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-
-	"github.com/kenshin579/chronos-go/internal/base"
 )
 
 // trimArchivedCmd deletes tasks referenced by a state ZSET in two passes (shared by TrimArchived and TrimCompleted): (1) by age — entries
@@ -58,8 +56,8 @@ return removed
 // (removals are atomic and idempotent). Archived tasks hold no unique lock
 // (released at archive time), so no lock cleanup is needed here.
 func (r *RDB) TrimArchived(ctx context.Context, qname string, cutoff time.Time, maxSize, batch int) (int, error) {
-	keys := []string{base.ArchivedKey(qname)}
-	argv := []interface{}{cutoff.Unix(), batch, base.TaskKeyPrefix(qname), maxSize}
+	keys := []string{r.keys.ArchivedKey(qname)}
+	argv := []interface{}{cutoff.Unix(), batch, r.keys.TaskKeyPrefix(qname), maxSize}
 	n, err := trimArchivedCmd.Run(ctx, r.client, keys, argv...).Int()
 	if err != nil {
 		return 0, err
@@ -74,8 +72,8 @@ func (r *RDB) TrimArchived(ctx context.Context, qname string, cutoff time.Time, 
 // IS the expiry, so the cutoff is simply "now"). Batch/negative-maxSize rules
 // match TrimArchived. Completed tasks hold no unique lock (released in Done).
 func (r *RDB) TrimCompleted(ctx context.Context, qname string, now time.Time, maxSize, batch int) (int, error) {
-	keys := []string{base.CompletedKey(qname)}
-	argv := []interface{}{now.Unix(), batch, base.TaskKeyPrefix(qname), maxSize}
+	keys := []string{r.keys.CompletedKey(qname)}
+	argv := []interface{}{now.Unix(), batch, r.keys.TaskKeyPrefix(qname), maxSize}
 	n, err := trimArchivedCmd.Run(ctx, r.client, keys, argv...).Int()
 	if err != nil {
 		return 0, err

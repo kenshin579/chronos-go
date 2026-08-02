@@ -12,18 +12,18 @@ import (
 
 func TestEnqueuePeriodic_DedupsSameTrigger(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	msg := &base.TaskMessage{ID: "job:1:1700000000", Kind: "job", Payload: []byte("{}"), Queue: "default"}
-	dedupKey := base.PeriodicDedupKey("default", "job:1:1700000000")
+	triggerID := "job:1:1700000000"
 
 	// First enqueue for this trigger succeeds.
-	if err := r.EnqueuePeriodic(ctx, msg, dedupKey, time.Minute); err != nil {
+	if err := r.EnqueuePeriodic(ctx, msg, triggerID, time.Minute); err != nil {
 		t.Fatalf("first: %v", err)
 	}
 	// Second enqueue for the SAME trigger (e.g. a split-brain second leader) is rejected.
-	if err := r.EnqueuePeriodic(ctx, msg, dedupKey, time.Minute); !errors.Is(err, ErrDuplicateTask) {
+	if err := r.EnqueuePeriodic(ctx, msg, triggerID, time.Minute); !errors.Is(err, ErrDuplicateTask) {
 		t.Fatalf("second: err=%v, want ErrDuplicateTask", err)
 	}
 	// Exactly one stream entry.
@@ -39,7 +39,7 @@ func TestEnqueuePeriodic_DedupsSameTrigger(t *testing.T) {
 
 func TestLastFired_RoundTrip(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	// Absent → zero time, ok=false.

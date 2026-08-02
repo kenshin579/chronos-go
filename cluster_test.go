@@ -37,6 +37,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kenshin579/chronos-go/internal/base"
 	"github.com/kenshin579/chronos-go/internal/rdb"
 	"github.com/kenshin579/chronos-go/internal/testutil"
 )
@@ -290,7 +291,7 @@ func TestCluster_RecoverAbandonedTask(t *testing.T) {
 	c := NewClient(client)
 	defer c.Close()
 	ctx := context.Background()
-	r := rdb.NewRDB(client)
+	r := rdb.NewRDB(client, base.DefaultKeys)
 
 	// Enqueue, then dequeue with a consumer that "crashes" (never acks).
 	info, err := Enqueue(ctx, c, clArgs{N: 8}, WithQueue("recq"))
@@ -477,11 +478,11 @@ func TestCluster_TwoQueuesDifferentSlots(t *testing.T) {
 	// Prove the two queues really live on different slots — otherwise this
 	// test would silently stop covering MOVED redirects if names change.
 	const q1, q2 = "alpha", "bravo"
-	slot1, err := client.ClusterKeySlot(ctx, "chronos:{"+q1+"}:stream").Result()
+	slot1, err := client.ClusterKeySlot(ctx, base.DefaultKeys.StreamKey(q1)).Result()
 	if err != nil {
 		t.Fatalf("keyslot: %v", err)
 	}
-	slot2, err := client.ClusterKeySlot(ctx, "chronos:{"+q2+"}:stream").Result()
+	slot2, err := client.ClusterKeySlot(ctx, base.DefaultKeys.StreamKey(q2)).Result()
 	if err != nil {
 		t.Fatalf("keyslot: %v", err)
 	}
@@ -521,6 +522,33 @@ func TestCluster_TwoQueuesDifferentSlots(t *testing.T) {
 	waitFor(t, 10*time.Second, "both slots' queues fully processed", func() bool {
 		return n1.Load() == 3 && n2.Load() == 3
 	})
+}
+
+// TestPrefixIsSlotNeutral asserts a key prefix does not change the cluster
+// slot: Redis hashes only the first {...} pair and ignores bytes before it.
+// Every multi-key Lua script depends on a queue's keys sharing one slot, so if
+// this were false the prefix feature would break clustered deployments.
+func TestPrefixIsSlotNeutral(t *testing.T) {
+	client := testutil.NewClusterRedis(t)
+	ctx := context.Background()
+
+	def := base.DefaultKeys
+	custom := base.NewKeys("someotherapp")
+
+	for _, q := range []string{"default", "critical"} {
+		want, err := client.ClusterKeySlot(ctx, def.StreamKey(q)).Result()
+		if err != nil {
+			t.Fatalf("slot for default prefix: %v", err)
+		}
+		got, err := client.ClusterKeySlot(ctx, custom.StreamKey(q)).Result()
+		if err != nil {
+			t.Fatalf("slot for custom prefix: %v", err)
+		}
+		if got != want {
+			t.Errorf("queue %q: prefixed key hashes to slot %d, unprefixed to %d — "+
+				"a prefix must not move the slot", q, got, want)
+		}
+	}
 }
 
 func TestCluster_CompletedRetention(t *testing.T) {
@@ -641,7 +669,7 @@ func TestCluster_RequeueReturnsTask(t *testing.T) {
 	c := NewClient(client)
 	defer c.Close()
 	ctx := context.Background()
-	r := rdb.NewRDB(client)
+	r := rdb.NewRDB(client, base.DefaultKeys)
 
 	info, err := Enqueue(ctx, c, clArgs{N: 41}, WithQueue("alpha"))
 	if err != nil {

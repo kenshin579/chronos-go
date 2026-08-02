@@ -43,10 +43,10 @@ func (r *RDB) Schedule(ctx context.Context, msg *base.TaskMessage, processAt tim
 		return err
 	}
 	keys := []string{
-		base.TaskKey(msg.Queue, msg.ID),
-		base.ScheduledKey(msg.Queue),
-		base.CompletedKey(msg.Queue),
-		base.ArchivedKey(msg.Queue),
+		r.keys.TaskKey(msg.Queue, msg.ID),
+		r.keys.ScheduledKey(msg.Queue),
+		r.keys.CompletedKey(msg.Queue),
+		r.keys.ArchivedKey(msg.Queue),
 	}
 	argv := []interface{}{encoded, int(base.StateScheduled), scheduleScore(processAt), msg.ID}
 	return scheduleCmd.Run(ctx, r.client, keys, argv...).Err()

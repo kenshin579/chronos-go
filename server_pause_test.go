@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kenshin579/chronos-go/internal/base"
 	"github.com/kenshin579/chronos-go/internal/rdb"
 	"github.com/kenshin579/chronos-go/internal/testutil"
 )
@@ -15,7 +16,7 @@ func TestServer_PauseStopsConsumptionResumeRestarts(t *testing.T) {
 	c := NewClient(client)
 	defer c.Close()
 	ctx := context.Background()
-	r := rdb.NewRDB(client)
+	r := rdb.NewRDB(client, base.DefaultKeys)
 
 	var done atomic.Int32
 	mux := NewMux()
@@ -62,7 +63,7 @@ func TestServer_PauseOneQueueOthersContinue(t *testing.T) {
 	c := NewClient(client)
 	defer c.Close()
 	ctx := context.Background()
-	r := rdb.NewRDB(client)
+	r := rdb.NewRDB(client, base.DefaultKeys)
 
 	var a, b atomic.Int32
 	mux := NewMux()

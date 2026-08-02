@@ -28,7 +28,7 @@ func pendingIdle(t *testing.T, r *RDB, qname string) time.Duration {
 
 func TestExtendLease_ResetsIdle(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 	if err := r.EnsureGroup(ctx, "default"); err != nil {
 		t.Fatalf("ensure group: %v", err)
@@ -53,7 +53,7 @@ func TestExtendLease_ResetsIdle(t *testing.T) {
 
 func TestRenewUnique_ExtendsTTL_MissingIsNoOp(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	key := base.UniqueKey("default", "k:abc")

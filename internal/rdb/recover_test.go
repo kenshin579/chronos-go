@@ -10,7 +10,7 @@ import (
 
 func TestRecover_ReclaimsStuckTaskToRetry(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	// Dequeue with consumer "dead" so the entry sits in dead's PEL, then never ack.
@@ -51,7 +51,7 @@ func TestRecover_ReclaimsStuckTaskToRetry(t *testing.T) {
 
 func TestRecover_ArchivesWhenRetriesExhausted(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	// MaxRetry=1 and already Retried=1 → the crash exhausts the budget → archive.
@@ -85,7 +85,7 @@ func TestRecover_ArchivesWhenRetriesExhausted(t *testing.T) {
 // stream by Recover, not merely acked — otherwise it leaks and inflates counts.
 func TestRecover_OrphanEntryIsTrimmed(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 	if err := r.EnsureGroup(ctx, "default"); err != nil {
 		t.Fatalf("ensure group: %v", err)

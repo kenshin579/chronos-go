@@ -27,7 +27,7 @@ type Inspector struct {
 
 // NewInspector returns an Inspector backed by the given Redis client.
 func NewInspector(r redis.UniversalClient) *Inspector {
-	return &Inspector{rdb: rdb.NewRDB(r)}
+	return &Inspector{rdb: rdb.NewRDB(r, base.DefaultKeys)}
 }
 
 // QueueInfo is a queue's per-state task counts.
@@ -91,27 +91,11 @@ func (i *Inspector) PausedQueues(ctx context.Context) ([]string, error) {
 	return i.rdb.PausedQueues(ctx)
 }
 
-// zsetKeyForState maps a user-facing state name to its ZSET key.
-func zsetKeyForState(qname, state string) (string, error) {
-	switch state {
-	case "scheduled":
-		return base.ScheduledKey(qname), nil
-	case "retry":
-		return base.RetryKey(qname), nil
-	case "archived":
-		return base.ArchivedKey(qname), nil
-	case "completed":
-		return base.CompletedKey(qname), nil
-	default:
-		return "", fmt.Errorf("%w %q (want scheduled|retry|archived|completed)", ErrInvalidState, state)
-	}
-}
-
 // ListTasks returns up to limit tasks in the given state (scheduled|retry|archived).
 func (i *Inspector) ListTasks(ctx context.Context, qname, state string, limit int) ([]*TaskInfo, error) {
-	zsetKey, err := zsetKeyForState(qname, state)
-	if err != nil {
-		return nil, err
+	zsetKey, ok := i.rdb.ZSetKeyForState(qname, state)
+	if !ok {
+		return nil, fmt.Errorf("%w %q (want scheduled|retry|archived|completed)", ErrInvalidState, state)
 	}
 	entries, err := i.rdb.ListZSetTasks(ctx, qname, zsetKey, limit)
 	if err != nil {
@@ -136,7 +120,7 @@ func (i *Inspector) GetTask(ctx context.Context, qname, taskID string) (*TaskInf
 		return nil, err
 	}
 	ti := taskInfoFromMsg(msg)
-	if zsetKey, kerr := zsetKeyForState(qname, ti.State); kerr == nil {
+	if zsetKey, known := i.rdb.ZSetKeyForState(qname, ti.State); known {
 		if score, ok, serr := i.rdb.ZScore(ctx, zsetKey, taskID); serr == nil && ok {
 			ti.NextProcessAt = time.Unix(int64(score), 0)
 		}

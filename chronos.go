@@ -130,7 +130,7 @@ type Client struct {
 
 // NewClient returns a Client backed by the given Redis client.
 func NewClient(r redis.UniversalClient) *Client {
-	return &Client{rdb: rdb.NewRDB(r)}
+	return &Client{rdb: rdb.NewRDB(r, base.DefaultKeys)}
 }
 
 // Close releases the client's resources. The underlying Redis client is owned
@@ -291,9 +291,6 @@ func Enqueue[T TaskArgs](ctx context.Context, c *Client, args T, opts ...Option)
 func dispatchMessage(ctx context.Context, c *Client, msg *base.TaskMessage, options enqueueOptions) error {
 	scheduled := !options.processAt.IsZero() && options.processAt.After(time.Now())
 	unique := options.uniqueTTL > 0
-	if unique {
-		msg.UniqueKey = base.UniqueKey(msg.Queue, base.UniqueSuffix(msg.Kind, msg.Payload))
-	}
 	switch {
 	case unique && scheduled:
 		// The lock must outlive the delay, or it would expire before the task is

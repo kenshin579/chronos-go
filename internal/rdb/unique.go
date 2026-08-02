@@ -62,11 +62,14 @@ func uniqueTTLMillis(ttl time.Duration) int {
 }
 
 // EnqueueUnique enqueues a task for immediate processing, acquiring its unique
-// lock first. Returns ErrDuplicateTask if an identical task's lock is held. msg
-// must have UniqueKey set (see base.UniqueKey/UniqueSuffix). uniqueTTL is the
-// lock's orphan-safety expiry; the lock is released early when the task reaches
-// a terminal state.
+// lock first. Returns ErrDuplicateTask if an identical task's lock is held. The
+// lock's key is derived here (from kind + payload) so it is always built under
+// this RDB's namespace, and it is set on msg before encoding so the stored task
+// carries the key its release path later needs. uniqueTTL is the lock's
+// orphan-safety expiry; the lock is released early when the task reaches a
+// terminal state.
 func (r *RDB) EnqueueUnique(ctx context.Context, msg *base.TaskMessage, uniqueTTL time.Duration) error {
+	msg.UniqueKey = r.keys.UniqueKey(msg.Queue, base.UniqueSuffix(msg.Kind, msg.Payload))
 	msg.State = base.StatePending
 	encoded, err := base.EncodeMessage(msg)
 	if err != nil {
@@ -76,8 +79,8 @@ func (r *RDB) EnqueueUnique(ctx context.Context, msg *base.TaskMessage, uniqueTT
 		return err
 	}
 	keys := []string{
-		msg.UniqueKey, base.TaskKey(msg.Queue, msg.ID), base.StreamKey(msg.Queue),
-		base.CompletedKey(msg.Queue), base.ArchivedKey(msg.Queue),
+		msg.UniqueKey, r.keys.TaskKey(msg.Queue, msg.ID), r.keys.StreamKey(msg.Queue),
+		r.keys.CompletedKey(msg.Queue), r.keys.ArchivedKey(msg.Queue),
 	}
 	argv := []interface{}{msg.ID, uniqueTTLMillis(uniqueTTL), encoded, int(base.StatePending)}
 	res, err := enqueueUniqueCmd.Run(ctx, r.client, keys, argv...).Int()
@@ -93,6 +96,7 @@ func (r *RDB) EnqueueUnique(ctx context.Context, msg *base.TaskMessage, uniqueTT
 // ScheduleUnique is EnqueueUnique for delayed tasks (adds to the scheduled ZSET
 // at processAt instead of the stream).
 func (r *RDB) ScheduleUnique(ctx context.Context, msg *base.TaskMessage, processAt time.Time, uniqueTTL time.Duration) error {
+	msg.UniqueKey = r.keys.UniqueKey(msg.Queue, base.UniqueSuffix(msg.Kind, msg.Payload))
 	msg.State = base.StateScheduled
 	encoded, err := base.EncodeMessage(msg)
 	if err != nil {
@@ -102,8 +106,8 @@ func (r *RDB) ScheduleUnique(ctx context.Context, msg *base.TaskMessage, process
 		return err
 	}
 	keys := []string{
-		msg.UniqueKey, base.TaskKey(msg.Queue, msg.ID), base.ScheduledKey(msg.Queue),
-		base.CompletedKey(msg.Queue), base.ArchivedKey(msg.Queue),
+		msg.UniqueKey, r.keys.TaskKey(msg.Queue, msg.ID), r.keys.ScheduledKey(msg.Queue),
+		r.keys.CompletedKey(msg.Queue), r.keys.ArchivedKey(msg.Queue),
 	}
 	argv := []interface{}{msg.ID, uniqueTTLMillis(uniqueTTL), encoded, int(base.StateScheduled), scheduleScore(processAt)}
 	res, err := scheduleUniqueCmd.Run(ctx, r.client, keys, argv...).Int()

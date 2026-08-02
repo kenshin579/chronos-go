@@ -11,7 +11,7 @@ import (
 
 func TestEnqueueChainLink_CreatesAndNoOpsWhenExists(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	msg := &base.TaskMessage{ID: "ch:1", Kind: "k", Queue: "default", ChainID: "ch", ChainIndex: 1}
@@ -43,7 +43,7 @@ func TestEnqueueChainLink_CreatesAndNoOpsWhenExists(t *testing.T) {
 
 func TestEnqueueChainLink_DelayGoesToScheduled(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	msg := &base.TaskMessage{ID: "ch:2", Kind: "k", Queue: "default", ChainID: "ch", ChainIndex: 2}

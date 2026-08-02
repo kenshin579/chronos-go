@@ -13,7 +13,7 @@ import (
 
 func TestForwardRetry_MovesDueTasksToStream(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	if err := r.EnsureGroup(ctx, "default"); err != nil {

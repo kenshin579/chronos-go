@@ -13,7 +13,7 @@ import (
 
 func TestSchedule_StoresTaskInScheduledZSet(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	msg := &base.TaskMessage{ID: "t1", Kind: "k", Payload: []byte("{}"), Queue: "default"}
@@ -50,7 +50,7 @@ func TestSchedule_StoresTaskInScheduledZSet(t *testing.T) {
 
 func TestForwardScheduled_MovesDueTasksToStream(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	if err := r.EnsureGroup(ctx, "default"); err != nil {

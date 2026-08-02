@@ -28,7 +28,7 @@ func archiveDirect(t *testing.T, client redis.UniversalClient, qname, id string,
 
 func TestTrimArchived_DeletesExpiredByAge(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	now := time.Now()
@@ -57,7 +57,7 @@ func TestTrimArchived_DeletesExpiredByAge(t *testing.T) {
 
 func TestTrimArchived_EnforcesMaxSize(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	now := time.Now()
@@ -87,7 +87,7 @@ func TestTrimArchived_EnforcesMaxSize(t *testing.T) {
 // unbounded number of entries (Redis blocking risk); it converges over calls.
 func TestTrimArchived_SizeCapRespectsBatch(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	now := time.Now()
@@ -112,7 +112,7 @@ func TestTrimArchived_SizeCapRespectsBatch(t *testing.T) {
 // rdb layer, not just in the caller.
 func TestTrimArchived_NegativeMaxSizeDisablesCap(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	now := time.Now()
@@ -134,7 +134,7 @@ func TestTrimArchived_NegativeMaxSizeDisablesCap(t *testing.T) {
 
 func TestTrimCompleted_RemovesExpiredAndOverCap(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 	now := time.Now()
 

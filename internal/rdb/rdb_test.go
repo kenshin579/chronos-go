@@ -13,7 +13,7 @@ import (
 
 func TestEnqueue_StoresBodyAndPushesToStream(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	msg := &base.TaskMessage{
@@ -61,7 +61,7 @@ func TestEnqueue_StoresBodyAndPushesToStream(t *testing.T) {
 
 func TestDequeue_ReturnsEnqueuedTask(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	if err := r.EnsureGroup(ctx, "default"); err != nil {
@@ -89,7 +89,7 @@ func TestDequeue_ReturnsEnqueuedTask(t *testing.T) {
 
 func TestDequeue_EmptyReturnsErrNoTask(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	if err := r.EnsureGroup(ctx, "default"); err != nil {
@@ -104,7 +104,7 @@ func TestDequeue_EmptyReturnsErrNoTask(t *testing.T) {
 
 func TestDone_AcksAndDeletesTask(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	if err := r.EnsureGroup(ctx, "default"); err != nil {
@@ -144,7 +144,7 @@ func TestDone_AcksAndDeletesTask(t *testing.T) {
 
 func TestDone_TrimsStreamEntry(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	if err := r.EnsureGroup(ctx, "default"); err != nil {
@@ -170,7 +170,7 @@ func TestDone_TrimsStreamEntry(t *testing.T) {
 
 func TestDone_RetentionMovesToCompleted(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	msg := &base.TaskMessage{ID: "c1", Kind: "k", Queue: "default", Retention: 3600}
@@ -212,7 +212,7 @@ func TestDone_RetentionMovesToCompleted(t *testing.T) {
 
 func TestEnqueue_ClearsStaleCompletedEntry(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	// 완료 보관된 태스크 "x"
@@ -246,7 +246,7 @@ func TestEnqueue_ClearsStaleCompletedEntry(t *testing.T) {
 
 func TestDone_NoRetentionDeletesImmediately(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	msg := &base.TaskMessage{ID: "c2", Kind: "k", Queue: "default"} // Retention 0
@@ -273,7 +273,7 @@ func TestDone_NoRetentionDeletesImmediately(t *testing.T) {
 
 func TestRetry_TrimsStreamEntry(t *testing.T) {
 	client := testutil.NewRedis(t)
-	r := NewRDB(client)
+	r := NewRDB(client, base.DefaultKeys)
 	ctx := context.Background()
 
 	if err := r.EnsureGroup(ctx, "default"); err != nil {

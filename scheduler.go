@@ -63,6 +63,14 @@ type Scheduler struct {
 
 // NewScheduler returns a Scheduler backed by the given Redis client.
 func NewScheduler(r redis.UniversalClient, cfg SchedulerConfig) *Scheduler {
+	return newScheduler(r, cfg, base.DefaultKeys)
+}
+
+// newScheduler applies the config defaults and builds a Scheduler reading and
+// writing under the given key layout — most importantly its leader lock, which
+// is what two deployments on one Redis database contend for. NewScheduler and
+// Namespace.NewScheduler both go through it.
+func newScheduler(r redis.UniversalClient, cfg SchedulerConfig, keys base.Keys) *Scheduler {
 	if cfg.Location == nil {
 		cfg.Location = time.Local
 	}
@@ -73,7 +81,7 @@ func NewScheduler(r redis.UniversalClient, cfg SchedulerConfig) *Scheduler {
 		cfg.LeaderTTL = 5 * time.Second
 	}
 	return &Scheduler{
-		rdb:      rdb.NewRDB(r),
+		rdb:      rdb.NewRDB(r, keys),
 		cfg:      cfg,
 		instance: newInstanceID(),
 		logger:   cfg.Logger,
@@ -303,9 +311,8 @@ func (s *Scheduler) enqueueTrigger(ctx context.Context, e *scheduleEntry, trigge
 		MaxRetry: e.maxRetry, NoArchive: e.noArch,
 		Retention: int64(e.retention / time.Second),
 	}
-	dedupKey := base.PeriodicDedupKey(e.queue, triggerID)
 	// Dedup key lives well beyond a leader-handover window but not forever.
-	return s.rdb.EnqueuePeriodic(ctx, msg, dedupKey, 10*s.cfg.LeaderTTL)
+	return s.rdb.EnqueuePeriodic(ctx, msg, triggerID, 10*s.cfg.LeaderTTL)
 }
 
 // Shutdown stops the scheduler; if this instance is the leader it resigns so a

@@ -145,6 +145,14 @@ type inflightEntry struct {
 
 // NewServer returns a Server backed by the given Redis client.
 func NewServer(r redis.UniversalClient, cfg ServerConfig) *Server {
+	return newServer(r, cfg, base.DefaultKeys)
+}
+
+// newServer applies the config defaults and builds a Server reading and writing
+// under the given key layout. NewServer and Namespace.NewServer both go through
+// it so the ~10 defaults live in exactly one place and neither has to construct
+// an RDB it then throws away.
+func newServer(r redis.UniversalClient, cfg ServerConfig, keys base.Keys) *Server {
 	if cfg.Concurrency <= 0 {
 		cfg.Concurrency = 1
 	}
@@ -188,7 +196,7 @@ func NewServer(r redis.UniversalClient, cfg ServerConfig) *Server {
 		cfg.JanitorInterval = 1 * time.Minute
 	}
 	return &Server{
-		rdb:      rdb.NewRDB(r),
+		rdb:      rdb.NewRDB(r, keys),
 		cfg:      cfg,
 		consumer: uuid.NewString(),
 		logger:   logger,
