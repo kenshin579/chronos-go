@@ -104,3 +104,103 @@ func TestNewMetrics_DoesNotSelfRegister(t *testing.T) {
 		t.Errorf("got %T, want prometheus.AlreadyRegisteredError", err)
 	}
 }
+
+// A task queue's natural duration range is workload-specific. DefBuckets tops
+// out at 10s, which suits a web request but not a batch job that sweeps an
+// external API for minutes: every observation lands in +Inf, and
+// histogram_quantile then reports the highest finite bound instead of failing,
+// so a p95 panel silently flatlines at 10s. WithDurationBuckets lets the adopter
+// pick a range that matches the work.
+func TestWithDurationBuckets_OverridesDefaultBuckets(t *testing.T) {
+	m := NewMetrics(WithDurationBuckets([]float64{1, 5, 15, 30, 60, 120, 300, 600, 1800}))
+
+	m.ObserveTask("batch", "batch:refresh", chronos.OutcomeSuccess, 90*time.Second)
+
+	const want = `
+# HELP chronos_task_duration_seconds Task handler duration in seconds, by queue and kind.
+# TYPE chronos_task_duration_seconds histogram
+chronos_task_duration_seconds_bucket{kind="batch:refresh",queue="batch",le="1"} 0
+chronos_task_duration_seconds_bucket{kind="batch:refresh",queue="batch",le="5"} 0
+chronos_task_duration_seconds_bucket{kind="batch:refresh",queue="batch",le="15"} 0
+chronos_task_duration_seconds_bucket{kind="batch:refresh",queue="batch",le="30"} 0
+chronos_task_duration_seconds_bucket{kind="batch:refresh",queue="batch",le="60"} 0
+chronos_task_duration_seconds_bucket{kind="batch:refresh",queue="batch",le="120"} 1
+chronos_task_duration_seconds_bucket{kind="batch:refresh",queue="batch",le="300"} 1
+chronos_task_duration_seconds_bucket{kind="batch:refresh",queue="batch",le="600"} 1
+chronos_task_duration_seconds_bucket{kind="batch:refresh",queue="batch",le="1800"} 1
+chronos_task_duration_seconds_bucket{kind="batch:refresh",queue="batch",le="+Inf"} 1
+chronos_task_duration_seconds_sum{kind="batch:refresh",queue="batch"} 90
+chronos_task_duration_seconds_count{kind="batch:refresh",queue="batch"} 1
+`
+	if err := testutil.CollectAndCompare(m.duration, strings.NewReader(want)); err != nil {
+		t.Fatalf("custom buckets: %v", err)
+	}
+}
+
+// The option is additive: an adopter who does not pass it keeps DefBuckets.
+func TestNewMetrics_DefaultsToDefBuckets(t *testing.T) {
+	m := NewMetrics()
+
+	m.ObserveTask("default", "email:send", chronos.OutcomeSuccess, 3*time.Millisecond)
+
+	got := bucketBounds(t, m)
+	if len(got) != len(prometheus.DefBuckets) {
+		t.Fatalf("bucket count = %d, want %d (DefBuckets)", len(got), len(prometheus.DefBuckets))
+	}
+	for i, want := range prometheus.DefBuckets {
+		if got[i] != want {
+			t.Errorf("bucket[%d] = %v, want %v", i, got[i], want)
+		}
+	}
+}
+
+// An empty or nil bucket slice must fall back to DefBuckets rather than produce
+// a histogram with no finite buckets, which would make every quantile +Inf.
+func TestWithDurationBuckets_EmptyFallsBackToDefault(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		buckets []float64
+	}{
+		{"nil", nil},
+		{"empty", []float64{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewMetrics(WithDurationBuckets(tc.buckets))
+			m.ObserveTask("default", "email:send", chronos.OutcomeSuccess, time.Millisecond)
+
+			if got := len(bucketBounds(t, m)); got != len(prometheus.DefBuckets) {
+				t.Errorf("bucket count = %d, want %d (DefBuckets)", got, len(prometheus.DefBuckets))
+			}
+		})
+	}
+}
+
+// bucketBounds returns the finite upper bounds of the duration histogram's
+// first child series, in the order Prometheus reports them.
+func bucketBounds(t *testing.T, m *Metrics) []float64 {
+	t.Helper()
+
+	reg := prometheus.NewRegistry()
+	if err := reg.Register(m); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != "chronos_task_duration_seconds" {
+			continue
+		}
+		if len(mf.GetMetric()) == 0 {
+			t.Fatal("duration histogram has no child series")
+		}
+		var out []float64
+		for _, b := range mf.GetMetric()[0].GetHistogram().GetBucket() {
+			out = append(out, b.GetUpperBound())
+		}
+		return out
+	}
+	t.Fatal("chronos_task_duration_seconds not gathered")
+	return nil
+}
