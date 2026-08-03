@@ -62,6 +62,27 @@ assertion.
 `completed`. These names and labels are pinned by `names_test.go` — a rename
 blanks someone's dashboard panel silently, so it has to fail loudly in CI first.
 
+### `chronos_task_duration_seconds`
+
+The default buckets are `prometheus.DefBuckets`, whose largest finite bucket is
+10s. That suits request-shaped work and not batch work measured in minutes: once
+every observation exceeds the largest finite bucket they all land in `+Inf`, and
+`histogram_quantile` then returns the highest finite bound rather than an error —
+a p95 panel flatlines at 10s instead of visibly breaking.
+
+Pass a range that brackets your workload:
+
+```go
+metrics := chronosprom.NewMetrics(chronosprom.WithDurationBuckets(
+    []float64{1, 5, 15, 30, 60, 120, 300, 600, 1800},
+))
+```
+
+An empty or nil slice keeps `DefBuckets`. Changing buckets on a running
+deployment re-buckets the histogram — existing counts are not migrated, so
+quantiles over a window spanning the change mix both layouts until the old
+series age out.
+
 ### `chronos_collector_up`
 
 `QueueCollector` reads Redis at scrape time. When that read fails it emits

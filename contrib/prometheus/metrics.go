@@ -23,6 +23,33 @@ const (
 	outcomeDeadLetter = string(chronos.OutcomeDeadLetter)
 )
 
+// Option configures Metrics. Options are additive: NewMetrics with no options
+// keeps the defaults.
+type Option func(*options)
+
+type options struct {
+	durationBuckets []float64
+}
+
+// WithDurationBuckets sets the histogram buckets for
+// chronos_task_duration_seconds. An empty or nil slice keeps DefBuckets.
+//
+// The default, prometheus.DefBuckets, tops out at 10s — a good fit for
+// web-request latency and a poor one for batch work measured in minutes. Once
+// every observation exceeds the largest finite bucket they all fall into +Inf,
+// and histogram_quantile reports the highest finite bound rather than an error,
+// so a p95 panel flatlines at 10s instead of visibly breaking. Pick a range that
+// brackets the work:
+//
+//	NewMetrics(WithDurationBuckets([]float64{1, 5, 15, 30, 60, 120, 300, 600, 1800}))
+//
+// Changing this on a running deployment re-buckets the histogram: recorded
+// counts are not migrated, so quantiles over a window spanning the change mix
+// both layouts until the old series age out.
+func WithDurationBuckets(buckets []float64) Option {
+	return func(o *options) { o.durationBuckets = buckets }
+}
+
 var (
 	_ chronos.Metrics         = (*Metrics)(nil)
 	_ chronos.RecoveryMetrics = (*Metrics)(nil)
@@ -46,7 +73,15 @@ type Metrics struct {
 //	if err := reg.Register(m); err != nil {
 //		log.Warn("chronos metrics not registered", "error", err)
 //	}
-func NewMetrics() *Metrics {
+func NewMetrics(opts ...Option) *Metrics {
+	cfg := options{durationBuckets: prometheus.DefBuckets}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	if len(cfg.durationBuckets) == 0 {
+		cfg.durationBuckets = prometheus.DefBuckets
+	}
+
 	return &Metrics{
 		processed: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "chronos_tasks_processed_total",
@@ -55,7 +90,7 @@ func NewMetrics() *Metrics {
 		duration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "chronos_task_duration_seconds",
 			Help:    "Task handler duration in seconds, by queue and kind.",
-			Buckets: prometheus.DefBuckets,
+			Buckets: cfg.durationBuckets,
 		}, []string{"queue", "kind"}),
 		// No kind label: the recoverer reports a count for requeued tasks, not
 		// the messages, so the kind is not knowable for that half.
