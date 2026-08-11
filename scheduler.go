@@ -164,6 +164,7 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	if err := s.rdb.RegisterSchedules(ctx, s.scheduleMetas()); err != nil {
 		s.logger.Error("chronos: schedule registry write failed", "error", err)
 	}
+	s.pruneRegistry(ctx)
 
 	runCtx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
@@ -188,6 +189,22 @@ func (s *Scheduler) scheduleIDs() []string {
 		ids = append(ids, e.id)
 	}
 	return ids
+}
+
+// pruneRegistry drops registry entries this scheduler no longer registers that
+// have gone stale by the Inspector's definition, so a changed cron spec does not
+// strand its old ID forever. Best-effort: scheduling works without the registry.
+func (s *Scheduler) pruneRegistry(ctx context.Context) {
+	n, err := s.rdb.PruneSchedules(ctx, s.scheduleIDs(), time.Now().Add(-staleAfter))
+	if err != nil {
+		if ctx.Err() == nil {
+			s.logger.Debug("chronos: schedule registry prune failed", "error", err)
+		}
+		return
+	}
+	if n > 0 {
+		s.logger.Info("chronos: pruned stale schedule registry entries", "count", n)
+	}
 }
 
 // run drives leadership renewal and, while leader, the tick loop.
@@ -222,6 +239,10 @@ func (s *Scheduler) run(ctx context.Context) {
 			if err := s.rdb.TouchSchedules(ctx, s.scheduleIDs()); err != nil && ctx.Err() == nil {
 				s.logger.Debug("chronos: schedule registry touch failed", "error", err)
 			}
+			// Prune here too, not just at Start: during a rolling deploy the
+			// previous version's entries are still fresh when this instance
+			// starts, and only go stale once that pod exits.
+			s.pruneRegistry(ctx)
 		case <-resign:
 			// A leader resigned; try to take over right away.
 			s.tryElect(ctx)
