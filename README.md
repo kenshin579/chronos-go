@@ -309,7 +309,9 @@ Missed triggers (after a leader-election gap) are handled by a per-job
 
 Registered schedules are published to a registry, so the Inspector, CLI and
 web console can list them (with last-fired and liveness) even before they
-first fire; entries no scheduler has refreshed for a minute show as stale.
+first fire; entries no scheduler has refreshed for a minute show as stale. A
+schedule's ID embeds its spec, so editing a cron leaves the old ID behind; a
+running scheduler prunes entries it no longer registers once they go stale.
 
 ## Observability
 

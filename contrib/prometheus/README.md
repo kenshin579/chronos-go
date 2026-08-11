@@ -144,6 +144,12 @@ that case, and `chronos_collector_up` says whether Redis is the reason.
 Unlabelled and aggregate on purpose: `1` if **any** schedule registry entry has
 gone stale, `0` otherwise. Alert with `max(chronos_schedule_stale) > 0`.
 
+A schedule's ID embeds its spec, so changing a cron's spec mints a new ID and
+leaves the old one behind. A running scheduler prunes those orphans once they go
+stale, which is what keeps this gauge meaningful: it reports that the registry
+has stopped being refreshed — every scheduler for the prefix is gone — rather
+than that someone edited a cron months ago.
+
 ## Recovery metrics
 
 `chronos_tasks_recovered_total{queue, outcome}` counts tasks the recoverer

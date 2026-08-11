@@ -67,6 +67,56 @@ func (r *RDB) TouchSchedules(ctx context.Context, ids []string) error {
 	return r.client.HSet(ctx, r.keys.SchedulesKey(), pairs...).Err()
 }
 
+// PruneSchedules removes registry entries the caller no longer registers and
+// that nothing has refreshed since staleBefore, together with their last-fired
+// keys. It returns how many entries were removed.
+//
+// Both conditions are required. A schedule ID embeds its spec, so changing a
+// cron's spec mints a new ID and strands the old entry: nothing touches or
+// deletes it again, it goes stale a minute later, and it pins the stale gauge to
+// 1 for good. Pruning on "not mine" alone would instead delete a schedule a
+// previous-version pod is still firing mid-rollout — that pod keeps its own
+// entries fresh, so the staleness check spares them until it exits.
+func (r *RDB) PruneSchedules(ctx context.Context, keepIDs []string, staleBefore time.Time) (int, error) {
+	all, err := r.client.HGetAll(ctx, r.keys.SchedulesKey()).Result()
+	if err != nil {
+		return 0, err
+	}
+	keep := make(map[string]bool, len(keepIDs))
+	for _, id := range keepIDs {
+		keep[id] = true
+	}
+	cutoff := staleBefore.Unix()
+	fields := make([]string, 0, len(all))
+	for id, raw := range all {
+		if keep[id] {
+			continue
+		}
+		var m ScheduleMeta
+		if json.Unmarshal([]byte(raw), &m) != nil {
+			continue // foreign value shape; not ours to delete
+		}
+		if m.LastSeen >= cutoff {
+			continue // another instance is still heartbeating it
+		}
+		fields = append(fields, id)
+	}
+	if len(fields) == 0 {
+		return 0, nil
+	}
+	if err := r.client.HDel(ctx, r.keys.SchedulesKey(), fields...).Err(); err != nil {
+		return 0, err
+	}
+	// One key at a time: last-fired keys are global (no queue hash tag), so a
+	// multi-key DEL would cross slots on Redis Cluster. Best-effort — the
+	// registry entry is already gone, and a surviving last-fired key only
+	// resurfaces as a kind-less fire-history entry.
+	for _, f := range fields {
+		r.client.Del(ctx, r.keys.ScheduleLastFiredKey(f))
+	}
+	return len(fields), nil
+}
+
 // ListSchedules returns every registry entry.
 func (r *RDB) ListSchedules(ctx context.Context) ([]ScheduleMeta, error) {
 	all, err := r.client.HGetAll(ctx, r.keys.SchedulesKey()).Result()
