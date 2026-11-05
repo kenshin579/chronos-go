@@ -749,7 +749,8 @@ func (s *Server) heartbeaterLoop(ctx context.Context) {
 	ticker := time.NewTicker(s.cfg.HeartbeatInterval)
 	defer ticker.Stop()
 	// Renew unique locks well past the recover window so a crash (heartbeat stops)
-	// lets the recoverer take over before the lock lapses.
+	// lets the recoverer take over before the lock lapses. This is a floor, not a
+	// reset: a lock with more TTL left (a long WithUnique ttl) keeps it.
 	renewTTL := 2 * s.cfg.RecoverMinIdle
 	for {
 		select {

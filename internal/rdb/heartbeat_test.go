@@ -72,3 +72,31 @@ func TestRenewUnique_ExtendsTTL_MissingIsNoOp(t *testing.T) {
 		t.Error("RenewUnique must not create a missing key")
 	}
 }
+
+// A lock whose remaining TTL is already longer than the renewal TTL must keep
+// it: the heartbeat only ever extends. Otherwise a WithUnique(1h) task that
+// runs past one heartbeat would leave processing holding a short lock, which
+// can lapse while the task waits out its retry backoff.
+func TestRenewUnique_NeverShortensLongerTTL(t *testing.T) {
+	client := testutil.NewRedis(t)
+	r := NewRDB(client, base.DefaultKeys)
+	ctx := context.Background()
+
+	long := base.UniqueKey("default", "k:long")
+	short := base.UniqueKey("other", "k:short") // different queue = different slot
+	if err := client.Set(ctx, long, "t1", time.Hour).Err(); err != nil {
+		t.Fatalf("set long: %v", err)
+	}
+	if err := client.Set(ctx, short, "t2", time.Second).Err(); err != nil {
+		t.Fatalf("set short: %v", err)
+	}
+	if err := r.RenewUnique(ctx, []string{long, short}, time.Minute); err != nil {
+		t.Fatalf("renew: %v", err)
+	}
+	if ttl, _ := client.PTTL(ctx, long).Result(); ttl < 59*time.Minute {
+		t.Errorf("long ttl after renew = %v, want ~1h (must not be shortened)", ttl)
+	}
+	if ttl, _ := client.PTTL(ctx, short).Result(); ttl < 30*time.Second {
+		t.Errorf("short ttl after renew = %v, want ~1m (must still be extended)", ttl)
+	}
+}
