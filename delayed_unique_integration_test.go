@@ -151,6 +151,61 @@ func TestIntegration_HeartbeatKeepsUniqueLockBeyondTTL(t *testing.T) {
 	doRelease()
 }
 
+// The heartbeat must only extend a unique lock, never shorten it. A task with a
+// long unique TTL that runs past a few heartbeats and then fails must still hold
+// its lock while it waits out the retry backoff — WithUnique's ttl is documented
+// to cover that wait. Before the fix the heartbeat reset the TTL to
+// 2*RecoverMinIdle (1s here), so the lock lapsed mid-backoff and a duplicate
+// enqueue slipped in.
+func TestIntegration_UniqueLockSurvivesRetryBackoffAfterHeartbeat(t *testing.T) {
+	client := testutil.NewRedis(t)
+	c := NewClient(client)
+	defer c.Close()
+
+	failed := make(chan struct{})
+	var runs atomic.Int32
+	mux := NewMux()
+	AddHandler(mux, func(ctx context.Context, task *Task[slowArgs]) error {
+		if runs.Add(1) == 1 {
+			time.Sleep(400 * time.Millisecond) // several heartbeats fire meanwhile
+			close(failed)
+			return errors.New("first attempt fails")
+		}
+		return nil
+	})
+
+	srv := NewServer(client, ServerConfig{
+		Queues:            map[string]int{"default": 1},
+		Concurrency:       4,
+		ForwardInterval:   50 * time.Millisecond,
+		RecoverInterval:   time.Hour, // keep recoverer out of the way
+		RecoverMinIdle:    500 * time.Millisecond,
+		HeartbeatInterval: 100 * time.Millisecond, // heartbeat renewal TTL = 2*RecoverMinIdle = 1s
+		RetryDelayFunc:    func(int, error) time.Duration { return 3 * time.Second },
+	})
+	ctx := context.Background()
+	if err := srv.Start(ctx, mux); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	if _, err := Enqueue(ctx, c, slowArgs{ID: 1}, WithUnique(time.Minute), WithMaxRetry(1)); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	select {
+	case <-failed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first attempt did not run")
+	}
+
+	// Past the 1s heartbeat TTL, but well inside the 3s backoff and the 1m unique TTL.
+	time.Sleep(1500 * time.Millisecond)
+
+	if _, err := Enqueue(ctx, c, slowArgs{ID: 1}, WithUnique(time.Minute)); !errors.Is(err, ErrDuplicateTask) {
+		t.Fatalf("duplicate during retry backoff err = %v, want ErrDuplicateTask (heartbeat must not shorten the lock)", err)
+	}
+}
+
 func TestIntegration_DelayedTaskExecutesOnce(t *testing.T) {
 	client := testutil.NewRedis(t)
 	c := NewClient(client)

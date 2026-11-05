@@ -15,7 +15,8 @@ package chronos
 //  [x] uniqueEnqueueCmd / uniqueScheduleCmd                 → TestCluster_UniqueDedup
 //  [x] periodicCmd + leader acquire/renew/resign + pub/sub  → TestCluster_SchedulerLeaderFailover
 //  [x] recover(XAUTOCLAIM)                                  → TestCluster_RecoverAbandonedTask
-//  [x] heartbeat(XCLAIM JUSTID + PEXPIRE)                   → TestCluster_HeartbeatLongTask
+//  [x] heartbeat(XCLAIM JUSTID)                             → TestCluster_HeartbeatLongTask
+//  [x] renewUniqueCmd (heartbeat, keys on two slots)        → TestCluster_HeartbeatRenewsUniqueAcrossSlots
 //  [x] janitor(TrimArchived)                                → TestCluster_JanitorTrimsArchived
 //  [x] runTaskCmd / deleteTask (Inspector)                  → TestCluster_InspectorRunAndDelete
 //  [x] QueueStats/Queues/ListZSetTasks/GetTask              → TestCluster_InspectorQueries
@@ -345,6 +346,66 @@ func TestCluster_HeartbeatLongTask(t *testing.T) {
 	time.Sleep(5500 * time.Millisecond) // 4s handler + recoverer chances afterwards
 	if n := runs.Load(); n != 1 {
 		t.Errorf("runs = %d, want 1 (heartbeat must keep the lease fresh)", n)
+	}
+}
+
+// One heartbeat renews unique locks from two queues on different slots in a
+// single pipelined RenewUnique call. Each lock gets its own single-key script
+// (no CROSSSLOT), and a lock with more TTL left than the renewal TTL keeps it.
+func TestCluster_HeartbeatRenewsUniqueAcrossSlots(t *testing.T) {
+	client := testutil.NewClusterRedis(t)
+	c := NewClient(client)
+	defer c.Close()
+	ctx := context.Background()
+
+	const q1, q2 = "alpha", "bravo" // different slots (TestCluster_TwoQueuesDifferentSlots)
+
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	doRelease := func() { releaseOnce.Do(func() { close(release) }) }
+	var started atomic.Int32
+	mux := NewMux()
+	AddHandler(mux, func(ctx context.Context, task *Task[clArgs]) error {
+		started.Add(1)
+		<-release
+		return nil
+	})
+	cfg := ServerConfig{
+		Queues:            map[string]int{q1: 1, q2: 1},
+		Concurrency:       4,
+		RecoverInterval:   time.Hour, // keep recoverer out of the way
+		RecoverMinIdle:    1500 * time.Millisecond,
+		HeartbeatInterval: 200 * time.Millisecond, // renewal TTL = 3s
+	}
+	srv := NewServer(client, cfg)
+	if err := srv.Start(ctx, mux); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() { doRelease(); srv.Shutdown(context.Background()) }()
+
+	keys := make([]string, 0, 2)
+	for i, q := range []string{q1, q2} {
+		args := clArgs{N: 100 + i}
+		if _, err := Enqueue(ctx, c, args, WithQueue(q), WithUnique(time.Minute)); err != nil {
+			t.Fatalf("enqueue %s: %v", q, err)
+		}
+		payload, err := encodeArgs(args)
+		if err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		keys = append(keys, base.DefaultKeys.UniqueKey(q, base.UniqueSuffix(args.Kind(), payload)))
+	}
+	waitFor(t, 5*time.Second, "both unique tasks in flight", func() bool { return started.Load() == 2 })
+	time.Sleep(time.Second) // several heartbeats, each renewing both locks together
+
+	for _, k := range keys {
+		ttl, err := client.PTTL(ctx, k).Result()
+		if err != nil {
+			t.Fatalf("pttl %s: %v", k, err)
+		}
+		if ttl < 30*time.Second {
+			t.Errorf("%s ttl = %v, want ~1m (heartbeat must not shorten it to 3s)", k, ttl)
+		}
 	}
 }
 
